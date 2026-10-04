@@ -269,8 +269,29 @@ echo "=== Renaming colliding symbols in every .o (objcopy sweep) ==="
 # we know collide with win32u-unix, repackage. Affects definitions AND
 # references uniformly, so cross-file calls inside wineserver still
 # resolve. Externals (win32u, etc.) only see the ws_-prefixed names.
-OBJCOPY=$(command -v llvm-objcopy || echo /opt/homebrew/opt/llvm/bin/llvm-objcopy)
-[ -x "$OBJCOPY" ] || OBJCOPY=/opt/homebrew/Cellar/llvm/22.1.0/bin/llvm-objcopy
+# Resolve llvm-objcopy. The old lookup was `command -v`, then a Homebrew
+# opt symlink, then a hardcoded Cellar path pinned to llvm 22.1.0. The runner's
+# Homebrew moves its LLVM version, so that last path stopped existing and the
+# sweep died with "No such file or directory" on line 308 of this file.
+#
+# xcrun is the reliable source: Xcode ships llvm-objcopy, and build/ci/
+# select-xcode.sh has already chosen the toolchain by this point. Homebrew's
+# glob is the fallback, since the version number is the only part that rots.
+OBJCOPY=""
+for cand in "$(xcrun -f llvm-objcopy 2>/dev/null || true)" \
+            "$(command -v llvm-objcopy 2>/dev/null || true)" \
+            /opt/homebrew/opt/llvm/bin/llvm-objcopy \
+            /opt/homebrew/bin/llvm-objcopy; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then OBJCOPY="$cand"; break; fi
+done
+if [ -z "$OBJCOPY" ]; then
+    OBJCOPY=$(ls -1 /opt/homebrew/Cellar/llvm/*/bin/llvm-objcopy 2>/dev/null | sort -V | tail -1)
+fi
+if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
+    echo "::error::llvm-objcopy not found (tried xcrun, PATH, Homebrew opt and Cellar)"
+    exit 1
+fi
+echo "  llvm-objcopy: $OBJCOPY"
 COLLISIONS=(
     alloc_user_handle free_user_handle get_virtual_screen_rect
     destroy_thread_windows get_window_thread is_desktop_class
