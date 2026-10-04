@@ -20,6 +20,15 @@ B="$R/FEX/build-ios"
 # is the sentinel that skips the CPU probe altogether; the iOS FEXCore build is
 # not tuned to the host, which is correct here anyway. build/fex-wow64/build.sh
 # passes the same flag for the same reason.
+#
+# FEX_IOS_HOST is defined by the caller, never by FEX's own CMakeLists: only the
+# FEX_IOS_HOST_BUILD option lives there, and that one controls the 32-bit guest
+# window for the WOW64 module, not this macro. Without FEX_IOS_HOST the
+# iOS-Madeira declarations in FEXCore's Core.cpp are compiled out while their
+# uses are not -- those uses sit outside every #ifdef, so the file only compiles
+# with the macro on. Define it on the C, C++ and ASM lines, as
+# fex-wow64/build.sh does. FEX_IOS_HOST_BUILD is deliberately NOT set: this is
+# the aarch64 host build, which does not want the guest window.
 echo "=== pkg_resources (setuptools) for FEX's configure scripts ==="
 python3 - <<'PY'
 import subprocess, sys
@@ -41,10 +50,11 @@ PY
 # reconfiguring and fail later for a confusing reason. Throw away any cache that
 # does not already carry the arm64 processor, or that predates -DTUNE_CPU=none:
 # CMake only reads the option cache entries at configure time, so an inherited
-# cache would silently pin TUNE_CPU back to "native" and the flag below would do
-# nothing on the next run.
+# cache would silently pin TUNE_CPU back to "native" and drop the FEX_IOS_HOST
+# define, and the flags below would then do nothing on the next run.
 if [ -f "$B/CMakeCache.txt" ] && { ! grep -q 'CMAKE_SYSTEM_PROCESSOR:.*=arm64' "$B/CMakeCache.txt" \
-     || ! grep -q 'TUNE_CPU:.*=none' "$B/CMakeCache.txt"; }; then
+     || ! grep -q 'TUNE_CPU:.*=none' "$B/CMakeCache.txt" \
+     || ! grep -q 'CXX_FLAGS.*FEX_IOS_HOST' "$B/CMakeCache.txt"; }; then
     echo "=== stale or untuned CMakeCache; reconfiguring ==="
     rm -rf "$B"
 fi
@@ -59,7 +69,8 @@ if [ ! -f "$B/CMakeCache.txt" ]; then
         -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
         -DENABLE_FEX_ALLOCATOR=OFF -DENABLE_ASSERTIONS=OFF -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
-        -DTUNE_CPU=none
+        -DTUNE_CPU=none \
+        -DCMAKE_C_FLAGS=-DFEX_IOS_HOST -DCMAKE_CXX_FLAGS=-DFEX_IOS_HOST -DCMAKE_ASM_FLAGS=-DFEX_IOS_HOST
 fi
 cmake --build "$B" --target FEXCore FEXCore_Base
 ls "$B/FEXCore/Source/"*.a
