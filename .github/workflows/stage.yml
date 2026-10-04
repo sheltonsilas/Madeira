@@ -159,6 +159,30 @@ jobs:
           bash build/freetype-ios/build.sh
           bash build/ntdll-unix/build.sh
 
+      - name: Configure the arm64ec Wine tree for the PE stages
+        if: ${{ inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # build-universal.sh needs wine/build-arm64ec to exist and refuses to
+          # run without it ("Run build/wine-pe/build-ntdll.sh first"). Running
+          # the whole ntdll script here just to configure the tree would also
+          # rebuild and re-strip ntdll.dll for nothing, so do exactly what it
+          # does to create the tree: configure, then build its host tools,
+          # because every PE link uses winebuild and widl.
+          #
+          # The wine-pe stage does not need this: build-ntdll.sh is its own
+          # body and configures the tree itself.
+          bash build/ci/ensure-bison.sh
+          export PATH="$PWD/toolchains/bison-3.8.2/bin:$PATH"   # if it had to build one
+          export PATH="$PWD/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:$PATH"
+          B="$PWD/wine/build-arm64ec"
+          if [ ! -f "$B/config.status" ]; then
+            echo "=== configuring wine/build-arm64ec ==="
+            mkdir -p "$B"
+            (cd "$B" && ../configure --enable-archs=arm64ec --without-x \
+                --disable-tests --enable-winegstreamer)
+          fi
+          bash build/ci/build-wine-tools.sh "$B"
+
       - name: Run the stage
         if: ${{ inputs.stage != 'xcodebuild' }}
         run: |
