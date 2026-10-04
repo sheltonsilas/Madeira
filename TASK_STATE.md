@@ -421,6 +421,41 @@ reading runner logs, never by guessing.
 | LLVM iOS: `ld: unknown options: -z` | `make all` also builds `tools/remarks-shlib`, which links a dylib with `-Wl,-z,defs`; Apple's ld has no `-z` | build only the ~33 archive targets airconv names, filtered against what CMake configured |
 | LLVM iOS: tree deleted a second after it was built | `find ... ! -name lib ! -name include -exec rm -rf {} +` — find also tests its **starting point**, so it was handed the whole build tree | `-mindepth 1`. **The LLVM-for-iOS build now succeeds (33 archives) and is cached under `llvm-ios-15.0.7-v1`; it takes about 13 minutes.** |
 | header substitution deleted the restored LLVM build | the step began `rm -rf toolchains/llvm-ios-build` and was gated only on an input, so it could not know the archives had come from the cache | the check moved inside the script, where the filesystem can be asked |
+| `ntdll-unix`: 35 of 37, then `dwrite.h` and `wtypes.h` not found | **these headers are not source files.** `wine/include` holds `dwrite.idl` and `wtypes.idl`; widl writes the headers into a *configured* build tree's `include/`. Building the host tools left that directory with only `config.h`, so the last two objects failed on headers that looked like source but are build output | `build/ci/build-wine-tools.sh` now runs `make -C include` after the tools and asserts `dwrite.h`, `wtypes.h`, `mfobjects.h`, `mftransform.h`. The dwrite compile had also pointed at `wine/build-arm64ec/include`, a tree not configured until the later PE stage. **Result: 37 succeeded, 0 failed.** |
+| `wineserver`: `ERROR: No base libwineserver.a found` | the script patched objects *into* an archive it assumed existed. That archive is gitignored and was produced by hand on the original dev machine, so no clean checkout — and no CI run — ever had one | `build/wineserver/build.sh` builds the base from the submodule's own `server/*.c` with the same flags, skipping the files whose originals `REPLACEMENTS` overwrites. **23 base objects, all 25 patched objects, archive produced.** |
+| `wineserver`: `line 308: .../llvm-objcopy: No such file or directory` | the lookup ended in a hardcoded Homebrew Cellar path pinned to llvm 22.1.0; Homebrew moves that version | resolve via `brew --prefix llvm`, installing llvm if absent |
+| `wineserver`: `llvm-objcopy not found` after that | `xcrun -f` was the wrong tool — it searches the toolchain's shim dir, and llvm-objcopy is in `usr/bin`. Then a `find` over **every** `/Applications/Xcode*.app` on a runner with both Xcode 16.4 and 26.3 found nothing: **Apple no longer ships llvm-objcopy in the toolchain at all** | Homebrew is the only source; `brew --prefix llvm` follows the version symlink so nothing is pinned. **Rename sweep and repack now succeed; libwineserver.a is 1.3 MB.** |
+
+### 9d. THE WINE UNIX-SIDE CHAIN IS GREEN
+
+`stage.yml` stage `wine-unix` passed end to end (run 37217805223). For the first
+time a clean checkout produced all three app-side Wine archives:
+
+| archive | size | notes |
+|---|---|---|
+| `app/Madeira/libntdll_unix.a` | 1.9 MB | 37 of 37 objects |
+| `app/Madeira/libwineserver.a` | 1.3 MB | 23 base + 25 patched objects, symbols renamed |
+| `app/Madeira/libwin32u_unix.a` | 3.3 MB | freetype merged in |
+
+The recurring theme across every one of these is worth recording: **the scripts
+were written against a developer's hand-prepared machine, and nothing in the
+repository reproduces that machine.** A gitignored archive, headers that are
+build output rather than source, and a Homebrew path pinned to one LLVM version
+are all the same class of fault. Each one only shows up on a clean runner.
+
+### 9e. BACKGROUND OPERATION
+
+`build/ci/overnight-loop.sh <stage> [iterations]` drives dispatch → wait →
+record, so the ~9-minute wait per iteration does not need an open terminal. It is
+launched detached (`Start-Process`, no elevation) so it survives a locked screen
+and the end of a session, and it logs to stderr because the wait runs inside a
+command substitution that would otherwise swallow its progress lines.
+
+It deliberately **stops on failure rather than retrying**. Reading a compile
+error and deciding what it means is the judgement part; an automatic fixer would
+paper over real faults. It surfaces the first error inline and saves the full log
+to `build/ci/overnight/<stage>-<run>.log`, so only that needs reading. It also
+adopts a run already in flight rather than racing a duplicate over it.
 
 What this means for the original complaint — "I could not run a single app": the
 reason is now understood and addressed at the build level. The arm64ec PE farm
