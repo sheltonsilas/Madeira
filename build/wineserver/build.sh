@@ -274,21 +274,33 @@ echo "=== Renaming colliding symbols in every .o (objcopy sweep) ==="
 # Homebrew moves its LLVM version, so that last path stopped existing and the
 # sweep died with "No such file or directory" on line 308 of this file.
 #
-# xcrun is the reliable source: Xcode ships llvm-objcopy, and build/ci/
-# select-xcode.sh has already chosen the toolchain by this point. Homebrew's
-# glob is the fallback, since the version number is the only part that rots.
+# `xcrun -f` is NOT the answer either: it resolves through the toolchain's shim
+# directory, and llvm-objcopy is a real binary in usr/bin, so it prints nothing
+# and this script exited with "llvm-objcopy not found". The canonical location is
+# <developer-dir>/Toolchains/XcodeDefault.xctoolchain/usr/bin/llvm-objcopy.
+#
+# Search that path, then PATH, then Homebrew, then a find over the Xcode
+# bundles. Only the version numbers and the developer-dir name move between
+# releases, so a search is more durable than any single hardcoded path.
 OBJCOPY=""
-for cand in "$(xcrun -f llvm-objcopy 2>/dev/null || true)" \
-            "$(command -v llvm-objcopy 2>/dev/null || true)" \
-            /opt/homebrew/opt/llvm/bin/llvm-objcopy \
-            /opt/homebrew/bin/llvm-objcopy; do
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+for cand in \
+    ${DEV_DIR:+"$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/llvm-objcopy"} \
+    "$(command -v llvm-objcopy 2>/dev/null || true)" \
+    /opt/homebrew/opt/llvm/bin/llvm-objcopy \
+    /opt/homebrew/bin/llvm-objcopy; do
     if [ -n "$cand" ] && [ -x "$cand" ]; then OBJCOPY="$cand"; break; fi
 done
 if [ -z "$OBJCOPY" ]; then
     OBJCOPY=$(ls -1 /opt/homebrew/Cellar/llvm/*/bin/llvm-objcopy 2>/dev/null | sort -V | tail -1)
 fi
 if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
-    echo "::error::llvm-objcopy not found (tried xcrun, PATH, Homebrew opt and Cellar)"
+    OBJCOPY=$(find /Applications/Xcode*.app \
+        -path '*XcodeDefault.xctoolchain/usr/bin/llvm-objcopy' -type f 2>/dev/null | head -1)
+fi
+if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
+    echo "::error::llvm-objcopy not found (tried the Xcode toolchain usr/bin, PATH,"
+    echo "::error::Homebrew opt/Cellar, and a find over /Applications/Xcode*.app)"
     exit 1
 fi
 echo "  llvm-objcopy: $OBJCOPY"
