@@ -4,8 +4,8 @@
 	branch = fix/arm64cpp-host-win32
 [submodule "wine"]
 	path = wine
-	url = https://github.com/willfaust/wine.git
-	branch = madeira-lgpl
+	url = https://github.com/sheltonsilas/wine.git
+	branch = fix/arm64ec-wineboot
 [submodule "dxmt"]
 	path = dxmt
 	url = https://github.com/willfaust/dxmt.git
