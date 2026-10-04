@@ -127,11 +127,13 @@ compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "se
 # __wine_unix_call from dwrite.dll failed and get_glyph_bbox never ran —
 # every glyph run reported an EMPTY bbox and Chromium drew no text at all.
 # freetype is static here, so dwrite_freetype_ios.c rewrites dlopen/dlsym.
-# dwrite.h/dwrite_3.h are widl-generated and only exist in the arm64ec
-# build tree, so that include dir is named explicitly here.
+# dwrite.h is widl-generated, not a source file: it lands in whichever Wine tree
+# was configured, and $WINE_BUILD/include is already on the include path above.
+# build/wine-macos/build.sh runs `make -C include`, so it is there. It is NOT in
+# wine/build-arm64ec at this point -- that tree is configured later, by
+# build/wine-pe/build-ntdll.sh -- so naming that dir here was simply wrong.
 compile_unixlib "$BUILD_DIR/dwrite_freetype_ios.c" "dwrite_unixlib" "dwrite" \
-    -I"$WINE_SRC/dlls/dwrite" -I"$REPO_ROOT/research/freetype/include" \
-    -I"$REPO_ROOT/wine/build-arm64ec/include"
+    -I"$WINE_SRC/dlls/dwrite" -I"$REPO_ROOT/research/freetype/include"
 compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" \
     -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
@@ -161,8 +163,9 @@ compile_unixlib "$BUILD_DIR/dnsapi_unixlib_ios.c" "dnsapi_unixlib" "dnsapi" \
 # with libavcodec, and the wg_parser (quartz's MP3/WAV splitters, Media
 # Foundation's MP4 source; wg_parser_av_ios.c, #included by it) with
 # libavformat.  FFmpeg comes from build/ffmpeg/build.sh (LGPL configuration).
-# The widl-generated mfobjects.h/mftransform.h that unixlib.h pulls in only
-# exist in a configured build tree's include dir, which $WINE_BUILD already is.
+# The widl-generated wtypes.h/mfobjects.h/mftransform.h that unixlib.h pulls in
+# are not source files; build/wine-macos/build.sh runs `make -C include` to
+# generate them, and $WINE_BUILD/include is already on the include path.
 FFMPEG_PREFIX="$REPO_ROOT/toolchains/ffmpeg-ios"
 compile_unixlib "$BUILD_DIR/winegstreamer_unixlib_ios.c" "winegstreamer_unixlib" "winegstreamer" \
     -I"$WINE_SRC/dlls/winegstreamer" -I"$FFMPEG_PREFIX/include"
