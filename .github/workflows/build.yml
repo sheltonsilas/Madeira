@@ -101,6 +101,19 @@ jobs:
           done
           echo "all Variant sources are compiled by the Madeira target"
 
+      - name: The variant flag reaches the Swift compiler
+        # Without the target-side setting, MADEIRA_VARIANT_FLAG is just a build
+        # setting nobody reads and the "Linux" job quietly ships a second
+        # Windows build. That defect existed once; this keeps it gone.
+        run: |
+          set -euo pipefail
+          grep -q 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(MADEIRA_VARIANT_FLAG)"' \
+            app/Madeira.xcodeproj/project.pbxproj \
+            || { echo "::error::MADEIRA_VARIANT_FLAG is not forwarded to Swift"; exit 1; }
+          grep -q 'MADEIRA_VARIANT_FLAG=' .github/workflows/build.yml \
+            || { echo "::error::the build job does not pass MADEIRA_VARIANT_FLAG"; exit 1; }
+          echo "variant flag is wired end to end"
+
       - name: Project file is structurally valid
         run: python3 tools/check_pbxproj.py
 
@@ -116,9 +129,13 @@ jobs:
           - variant: windows
             # Debug only, on purpose. See the header comment.
             variant_flag: ""
+            bundle_id: com.willfaust.madeora
             runner: macos-15
           - variant: linux
             variant_flag: MADEIRA_VARIANT_LINUX
+            # A distinct bundle id so both variants can be installed side by
+            # side, and so SideStore's source.json points at something real.
+            bundle_id: com.willfaust.madeora.linux
             runner: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -243,6 +260,19 @@ jobs:
           ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
           echo "LLVM headers ready: $(grep -m1 LLVM_VERSION_STRING toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || echo ok)"
 
+      - name: Cache the native build trees
+        # FEX and Wine dominate the wall clock and both are ordinary
+        # incremental make trees, so a cache turns a long iteration into a
+        # short one. The key follows the submodule pins: bumping FEX or Wine
+        # starts a fresh tree rather than resurrecting stale objects.
+        uses: actions/cache@v4
+        with:
+          path: |
+            FEX/build-ios
+            wine/build-arm64ec
+          key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') }}
+          restore-keys: native-${{ matrix.variant }}-
+
       - name: Build the native pieces
         # Only the iOS static libraries are built here. The Windows PE modules
         # (arm64ec-windows/, aarch64-windows/) are already tracked in git, so
@@ -261,10 +291,12 @@ jobs:
       - name: Build the app (Debug - the only configuration that runs)
         run: |
           set -euo pipefail
-          flags=""
-          if [ -n "${{ matrix.variant_flag }}" ]; then
-            flags="MADEIRA_VARIANT_LINUX=1"
-          fi
+          # MADEIRA_VARIANT_FLAG is consumed by the target's own
+          # SWIFT_ACTIVE_COMPILATION_CONDITIONS setting, which forwards it to
+          # the Swift compiler. Passing a bare MADEIRA_VARIANT_LINUX=1 build
+          # setting, as an earlier revision did, sets nothing anybody reads and
+          # silently produces the Windows variant twice. An empty value is
+          # fine: the setting then expands to nothing.
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -scheme Madeira \
@@ -272,7 +304,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            "$flags" \
+            MADEIRA_VARIANT_FLAG='${{ matrix.variant_flag }}' \
+            MADEIRA_BUNDLE_IDENTIFIER='${{ matrix.bundle_id }}' \
             build
 
       - name: Package the unsigned IPA
