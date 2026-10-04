@@ -78,6 +78,7 @@
 		A1000035 /* StikJITHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000036 /* StikJITHelper.swift */; };
 		B1000001 /* JITSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* JITSetup.swift */; };
 		C1000001 /* AppVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001 /* AppVariant.swift */; };
+		C1000007 /* JitOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000007 /* JitOnboardingView.swift */; };
 		C1000002 /* JitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000002 /* JitManager.swift */; };
 		C1000003 /* MadeiraBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000003 /* MadeiraBrowserView.swift */; };
 		C1000004 /* WindowsInstallerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000004 /* WindowsInstallerBridge.swift */; };
@@ -258,6 +259,7 @@
 		A2000036 /* StikJITHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StikJITHelper.swift; sourceTree = "<group>"; };
 		B2000001 /* JITSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JITSetup.swift; sourceTree = "<group>"; };
 		C2000001 /* AppVariant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVariant.swift; sourceTree = "<group>"; };
+		C2000007 /* JitOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JitOnboardingView.swift; sourceTree = "<group>"; };
 		C2000002 /* JitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JitManager.swift; sourceTree = "<group>"; };
 		C2000003 /* MadeiraBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraBrowserView.swift; sourceTree = "<group>"; };
 		C2000004 /* WindowsInstallerBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsInstallerBridge.swift; sourceTree = "<group>"; };
@@ -471,6 +473,7 @@
 				B2000003 /* JITBuiltInMessages.swift */,
 				B2000040 /* JITPairing.swift */,
 				C3000001 /* Variant */,
+				C2000007 /* JitOnboardingView.swift */,
 				B2000042 /* MadeiraRPPairing.h */,
 				B2000004 /* madeira-jit.js */,
 				B2000051 /* Madeira JIT.shortcut */,
@@ -787,6 +790,7 @@
 				B1000002 /* JITBuiltInHost.swift in Sources */,
 				B1000003 /* JITBuiltInMessages.swift in Sources */,
 				B1000040 /* JITPairing.swift in Sources */,
+				C1000007 /* JitOnboardingView.swift in Sources */,
 				C1000001 /* AppVariant.swift in Sources */,
 				C1000002 /* JitManager.swift in Sources */,
 				C1000003 /* MadeiraBrowserView.swift in Sources */,

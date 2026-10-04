@@ -1199,6 +1199,10 @@ struct ContentView: View {
     /// environment manager on Linux. Presented as a sheet because ContentView
     /// deliberately contains no NavigationLinks (see the note in `body`).
     @State private var showVariantScreen = false
+    /// The JIT setup wizard, shown once on launch when no debugger is attached.
+    /// Dismissal is remembered so it does not nag on every start.
+    @State private var showJitOnboarding = false
+    @AppStorage("madeira.jitOnboarded") private var jitOnboarded = false
 
     enum JITStatus {
         case unknown
@@ -1273,6 +1277,16 @@ struct ContentView: View {
                 case .windows: MadeiraBrowserView()
                 case .linux: NavigationStack { LinuxEnvironmentManagerView() }
                 }
+            }
+            // A new user with no debugger attached gets the setup wizard once.
+            // Without JIT everything still runs, but interpreted, so this is a
+            // speed problem rather than a crash - which is exactly the kind of
+            // thing a user will otherwise never diagnose on their own.
+            .task {
+                if !jitOnboarded && !isDebuggerAttached() { showJitOnboarding = true }
+            }
+            .sheet(isPresented: $showJitOnboarding, onDismiss: { jitOnboarded = true }) {
+                JitOnboardingView()
             }
             .navigationBarHidden(library.enabled ? library.current != nil : vSizeClass == .compact)
             // A second session cannot start in this process; offer to close Madeira.

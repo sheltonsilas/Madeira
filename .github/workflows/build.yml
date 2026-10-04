@@ -95,11 +95,11 @@ jobs:
       - name: The variant sources are in the Xcode target
         run: |
           set -euo pipefail
-          for f in AppVariant JitManager MadeiraBrowserView WindowsInstallerBridge PointerMode LinuxEnvironmentStore; do
+          for f in AppVariant JitManager MadeiraBrowserView WindowsInstallerBridge PointerMode LinuxEnvironmentStore JitOnboardingView; do
             grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
               || { echo "::error::$f.swift is not in the Sources phase"; exit 1; }
           done
-          echo "all six Variant sources are compiled by the Madeira target"
+          echo "all Variant sources are compiled by the Madeira target"
 
       - name: Project file is structurally valid
         run: python3 tools/check_pbxproj.py

@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Add the app/Madeira/Variant/*.swift files to Madeira.xcodeproj.
 
-Xcode's project format is a plist with stable 24-hex-char object IDs. Doing this
-by hand is easy to get subtly wrong, so this script does it deterministically
-and is idempotent: running it twice changes nothing the second time.
+Xcode's project format is a plist with stable object IDs, and doing this by hand
+is easy to get subtly wrong: duplicate object IDs make the project unopenable,
+and Xcode will not tell you until it opens.
+
+This script is incremental and idempotent:
+
+  * Running it twice with no new files changes nothing.
+  * Adding a file to FILES later wires only that file into the existing group.
+  * Object IDs are never reused, so a second pass cannot corrupt the project.
 
 It follows the convention already used in this project (B1xxxxxx for
-PBXBuildFile, B2xxxxxx for PBXFileReference) and continues it with a C prefix
-for the files added here, so they cannot collide with anything existing.
+PBXBuildFile, B2xxxxxx for PBXFileReference) and continues it with a C prefix.
 
 Usage:  python3 tools/add_variant_files.py
 Exits 0 on success, 1 on failure, and prints exactly what it changed.
@@ -19,7 +24,9 @@ import re
 import sys
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent.parent / "app" / "Madeira.xcodeproj" / "project.pbxproj"
+ROOT = Path(__file__).resolve().parent.parent
+PROJECT = ROOT / "app" / "Madeira.xcodeproj" / "project.pbxproj"
+VARIANT_DIR = ROOT / "app" / "Madeira" / "Variant"
 
 # (filename, object-id suffix)
 FILES = [
@@ -29,10 +36,23 @@ FILES = [
     ("WindowsInstallerBridge.swift", "04"),
     ("PointerMode.swift", "05"),
     ("LinuxEnvironmentStore.swift", "06"),
+    ("JitOnboardingView.swift", "07"),
 ]
 
 GROUP_ID = "C3000001"
 GROUP_NAME = "Variant"
+
+# Where new entries go: after the last entry of its own kind, so repeated runs
+# append rather than scatter.
+LAST_BUILD_FILE = re.compile(r"^\t\tC10000\d\d /\* .*? in Sources \*/ = \{isa = PBXBuildFile;.*$", re.M)
+LAST_FILE_REF = re.compile(r'^\t\tC20000\d\d /\* .*? \*/ = \{isa = PBXFileReference;.*$', re.M)
+FALLBACK_BUILD_FILE = re.compile(r"^\t\tB1000001 /\* JITSetup\.swift in Sources \*/ = .*$", re.M)
+FALLBACK_FILE_REF = re.compile(r"^\t\tB2000001 /\* JITSetup\.swift \*/ = \{isa = PBXFileReference;.*$", re.M)
+
+GROUP_CHILDREN_ANCHOR = "\t\t\t\tC3000001 /* Variant */,\n"
+PARENT_CHILDREN_ANCHOR = "\t\t\t\tB2000040 /* JITPairing.swift */,\n"
+SOURCES_ANCHOR = "\t\t\t\tB1000040 /* JITPairing.swift in Sources */,\n"
+GROUP_SECTION_END = "/* End PBXGroup section */"
 
 
 def build_file_id(suffix: str) -> str:
@@ -43,99 +63,105 @@ def file_ref_id(suffix: str) -> str:
     return f"C20000{suffix}"
 
 
+def fail(message: str) -> int:
+    print(f"ERROR: {message}", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     if not PROJECT.exists():
-        print(f"ERROR: {PROJECT} not found", file=sys.stderr)
-        return 1
+        return fail(f"{PROJECT} not found")
 
     text = PROJECT.read_text(encoding="utf-8")
     original = text
 
-    missing = [n for n, _ in FILES if not (PROJECT.parent.parent / "Madeira" / "Variant" / n).exists()]
-    if missing:
-        print(f"ERROR: source files missing on disk: {', '.join(missing)}", file=sys.stderr)
-        return 1
-
-    # Already wired up? Nothing to do.
-    if any(f"{build_file_id(s)} /* {n} in Sources */" in text for n, s in FILES):
+    # Only the files that are not wired up yet.
+    todo = [
+        (n, s) for n, s in FILES
+        if f"{build_file_id(s)} /* {n} in Sources */" not in text
+    ]
+    if not todo:
         print("Already wired up; no changes made.")
         return 0
 
-    # 1. PBXBuildFile entries, appended after the first existing one.
-    anchor = re.search(r"^\t\tB1000001 /\* JITSetup\.swift in Sources \*/ = .*$", text, re.M)
+    missing = [n for n, _ in todo if not (VARIANT_DIR / n).exists()]
+    if missing:
+        return fail(f"source files missing on disk: {', '.join(missing)}")
+
+    # Refuse to touch a project that is already broken, so a bad run cannot
+    # compound into a worse one.
+    duplicates = re.findall(r"^\t\t([A-F0-9]{8}) ", text, re.M)
+    if len(duplicates) != len(set(duplicates)):
+        return fail("project already contains duplicate object IDs; fix that first")
+
+    # 1. PBXBuildFile entries for the new files.
+    anchor = LAST_BUILD_FILE.search(text) or FALLBACK_BUILD_FILE.search(text)
     if not anchor:
-        print("ERROR: could not find the PBXBuildFile anchor", file=sys.stderr)
-        return 1
-    build_lines = "\n".join(
+        return fail("could not find a PBXBuildFile anchor")
+    text = text[: anchor.end()] + "\n" + "\n".join(
         f"\t\t{build_file_id(s)} /* {n} in Sources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id(s)} /* {n} */; }};"
-        for n, s in FILES
-    )
-    text = text[: anchor.end()] + "\n" + build_lines + text[anchor.end():]
+        for n, s in todo
+    ) + text[anchor.end():]
 
     # 2. PBXFileReference entries. Paths are relative to the Variant group, so
     #    only the bare filename is used.
-    ref_anchor = re.search(
-        r"^\t\tB2000001 /\* JITSetup\.swift \*/ = \{isa = PBXFileReference;.*$", text, re.M
-    )
-    if not ref_anchor:
-        print("ERROR: could not find the PBXFileReference anchor", file=sys.stderr)
-        return 1
-    ref_lines = "\n".join(
+    anchor = LAST_FILE_REF.search(text) or FALLBACK_FILE_REF.search(text)
+    if not anchor:
+        return fail("could not find a PBXFileReference anchor")
+    text = text[: anchor.end()] + "\n" + "\n".join(
         f'\t\t{file_ref_id(s)} /* {n} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {n}; sourceTree = "<group>"; }};'
-        for n, s in FILES
-    )
-    text = text[: ref_anchor.end()] + "\n" + ref_lines + text[ref_anchor.end():]
+        for n, s in todo
+    ) + text[anchor.end():]
 
-    # 3. The Variant group itself, inserted just before the group section ends.
-    group_block = (
-        f"\t\t{GROUP_ID} /* {GROUP_NAME} */ = {{\n"
-        "\t\t\tisa = PBXGroup;\n"
-        "\t\t\tchildren = (\n"
-        + "".join(f"\t\t\t\t{file_ref_id(s)} /* {n} */,\n" for n, s in FILES)
-        + "\t\t\t);\n"
-        f"\t\t\tpath = {GROUP_NAME};\n"
-        "\t\t\tsourceTree = \"<group>\";\n"
-        "\t\t};\n"
-    )
-    section_end = text.find("/* End PBXGroup section */")
-    if section_end == -1:
-        print("ERROR: no PBXGroup section", file=sys.stderr)
-        return 1
-    text = text[:section_end] + group_block + text[section_end:]
+    # 3. The group: create it on the first run, otherwise just add the new
+    #    children. Recreating it would duplicate the group object ID.
+    new_children = "".join(f"\t\t\t\t{file_ref_id(s)} /* {n} */,\n" for n, s in todo)
 
-    # 4. Hang the Variant group off the main app group (the one whose children
-    #    list already contains JITSetup.swift).
-    children_anchor = "\t\t\t\tB2000040 /* JITPairing.swift */,\n"
-    if children_anchor not in text:
-        print("ERROR: could not find the app group children anchor", file=sys.stderr)
-        return 1
+    if f"\t\t{GROUP_ID} /* {GROUP_NAME} */ = {{" in text:
+        if GROUP_CHILDREN_ANCHOR not in text:
+            return fail("Variant group exists but its children anchor is missing")
+        text = text.replace(GROUP_CHILDREN_ANCHOR, GROUP_CHILDREN_ANCHOR + new_children, 1)
+    else:
+        group_block = (
+            f"\t\t{GROUP_ID} /* {GROUP_NAME} */ = {{\n"
+            "\t\t\tisa = PBXGroup;\n"
+            "\t\t\tchildren = (\n"
+            + "".join(f"\t\t\t\t{file_ref_id(s)} /* {n} */,\n" for n, s in FILES)
+            + "\t\t\t);\n"
+            f"\t\t\tpath = {GROUP_NAME};\n"
+            "\t\t\tsourceTree = \"<group>\";\n"
+            "\t\t};\n"
+        )
+        end = text.find(GROUP_SECTION_END)
+        if end == -1:
+            return fail("no PBXGroup section")
+        text = text[:end] + group_block + text[end:]
+
+        if PARENT_CHILDREN_ANCHOR not in text:
+            return fail("could not find the app group children anchor")
+        text = text.replace(
+            PARENT_CHILDREN_ANCHOR,
+            PARENT_CHILDREN_ANCHOR + f"\t\t\t\t{GROUP_ID} /* {GROUP_NAME} */,\n",
+            1,
+        )
+
+    # 4. Compile them: add to the Madeira app target's Sources phase.
+    if SOURCES_ANCHOR not in text:
+        return fail("could not find the Sources phase anchor")
     text = text.replace(
-        children_anchor,
-        children_anchor + f"\t\t\t\t{GROUP_ID} /* {GROUP_NAME} */,\n",
-        1,
-    )
-
-    # 5. Compile them: add to the Madeira app target's Sources phase.
-    sources_anchor = "\t\t\t\tB1000040 /* JITPairing.swift in Sources */,\n"
-    if sources_anchor not in text:
-        print("ERROR: could not find the Sources phase anchor", file=sys.stderr)
-        return 1
-    text = text.replace(
-        sources_anchor,
-        sources_anchor
-        + "".join(
-            f"\t\t\t\t{build_file_id(s)} /* {n} in Sources */,\n" for n, s in FILES
+        SOURCES_ANCHOR,
+        SOURCES_ANCHOR + "".join(
+            f"\t\t\t\t{build_file_id(s)} /* {n} in Sources */,\n" for n, s in todo
         ),
         1,
     )
 
     if text == original:
-        print("ERROR: produced no changes", file=sys.stderr)
-        return 1
+        return fail("produced no changes")
 
     PROJECT.write_text(text, encoding="utf-8")
-    print(f"Wired {len(FILES)} files into the Madeira target:")
-    for n, _ in FILES:
+    print(f"Wired {len(todo)} file(s) into the Madeira target:")
+    for n, _ in todo:
         print(f"  + Madeira/Variant/{n}")
     return 0
 
