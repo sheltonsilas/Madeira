@@ -61,6 +61,8 @@ PROGS="explorer services cmd wineboot msiexec start rpcss conhost taskmgr regedi
 
 copied=0
 failed=""
+# Where per-module make logs land when something fails. Kept out of the repo.
+OBJ_LOG="${TMPDIR:-/tmp}/madeira-pe-universal"
 
 copy_one() {
     # $1 = module name, $2 = expected file name
@@ -78,22 +80,42 @@ copy_one() {
 
 echo "Building ARM64EC general-purpose modules into $DEST"
 
+# build_module <dir> <label>
+#
+# Runs make in the module's OWN directory, which is what the generated stub
+# Makefile expects: it forwards to the top-level tree as `<dir>/all`. The
+# previous form, `make -C "$B" programs/<name>`, asked the top-level Makefile
+# for a target that does not exist there (the real one is
+# `programs/<name>/all`), so it failed for every program while gdiplus and
+# d2d1 -- which used the per-directory form -- built fine. That mismatch is why
+# the whole program set was reported as "produced nothing".
+#
+# Output is captured and echoed ONLY on failure. Swallowing it entirely
+# (>/dev/null 2>&1) is what made the previous runs unreadable: a target that
+# does not exist and a compiler error look identical in the log.
+build_module() {
+    local dir="$1" label="$2" log="$OBJ_LOG/$label.log"
+    mkdir -p "$(dirname "$log")"
+    if make -C "$B/$dir" >"$log" 2>&1; then
+        return 0
+    fi
+    echo "  --- make output for $label (tail) ---"
+    tail -25 "$log" | sed 's/^/  | /'
+    return 1
+}
+
 for name in $DLLS; do
     echo "=== dlls/$name ==="
     # A module that upstream does not carry is reported, not fatal: the goal is
     # the widest working set this fork can produce, and one absent module must
     # not stop the rest.
-    make -C "$B" -C "dlls/$name" >/dev/null 2>&1 || true
+    build_module "dlls/$name" "dlls/$name" || echo "  ! make failed for dlls/$name"
     copy_one "$name" "$name.dll" || echo "  ! dlls/$name produced nothing"
 done
 
 for name in $PROGS; do
     echo "=== programs/$name ==="
-    # The exact make target differs between Wine modules; try the direct form
-    # first, then the triples-prefixed one, and let copy_one decide.
-    make -C "$B" "programs/$name" >/dev/null 2>&1 \
-        || make -C "$B" "programs/$name/arm64ec-windows/$name.exe" >/dev/null 2>&1 \
-        || true
+    build_module "programs/$name" "programs/$name" || echo "  ! make failed for programs/$name"
     copy_one "$name" "$name.exe" || echo "  ! programs/$name produced nothing"
 done
 
