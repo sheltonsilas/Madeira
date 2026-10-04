@@ -140,6 +140,16 @@ jobs:
         run: |
           # Both PE stages need the unix side built first and a configured
           # wine/build-arm64ec tree; building ntdll is what creates it.
+          #
+          # ntdll-unix compiles dwrite_freetype_ios.c against freetype's
+          # headers and the crypto unixlibs against gnutls's, so this step
+          # needs those two as well as the unix side itself. build.yml runs
+          # them earlier in its chain; a single-stage run has to bring them
+          # up here, or dwrite fails on a missing ft2build.h and the error
+          # points at Wine's source rather than at a missing prerequisite.
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/freetype-ios/build.sh
           bash build/ntdll-unix/build.sh
           test -f wine/build-arm64ec/config.status \
             || { echo "::error::wine/build-arm64ec is not configured after build-ntdll.sh"; exit 1; }
