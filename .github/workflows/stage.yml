@@ -140,7 +140,13 @@ jobs:
           bash build/wineserver/build.sh
           bash build/win32u-unix/build.sh
           bash build/dxmt-ios/build.sh
+          bash build/dxmt-ios/combine.sh
           bash build/rppairing-ios/build.sh
+          # The project references this folder in its Resources phase, and a
+          # folder reference that does not exist is a hard build error, not a
+          # warning. build.yml fills it from the VCREDIST_B64 secret; here an
+          # empty directory is enough to link.
+          mkdir -p app/Madeira/x86_64-vcruntime
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
             -configuration Debug -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build

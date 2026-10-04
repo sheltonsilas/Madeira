@@ -148,7 +148,41 @@ cmake -S "$SRC/llvm" -B "$OUT" -G "Unix Makefiles" \
     -DLLVM_TABLEGEN="$R/toolchains/llvm-host-bin/llvm-tblgen" \
     -DLLVM_ENABLE_FFI=Off \
     -DLLVM_ENABLE_THREADS=Off
-cmake --build "$OUT" -j "$JOBS"
+# Build the archives airconv links, not the whole tree. `make all` also builds
+# tools/remarks-shlib, which links libRemarks.dylib with `-Wl,-z,defs` -- a GNU
+# ld option Apple's ld rejects outright ("ld: unknown options: -z"), and it
+# stops the build 25% in. Nothing here needs a shared library or a tool: DXMT
+# links static archives, and the only tool this build needs, llvm-tblgen, comes
+# from the host stage.
+LLVM_TARGETS_NEEDED="LLVMPasses LLVMTarget LLVMCoroutines LLVMipo LLVMInstrumentation \
+LLVMVectorize LLVMLinker LLVMIRReader LLVMAsmParser LLVMFrontendOpenMP LLVMScalarOpts \
+LLVMInstCombine LLVMAggressiveInstCombine LLVMTransformUtils LLVMBitWriter LLVMAnalysis \
+LLVMProfileData LLVMSymbolize LLVMDebugInfoPDB LLVMDebugInfoMSF LLVMDebugInfoDWARF \
+LLVMObject LLVMTextAPI LLVMMCParser LLVMMC LLVMDebugInfoCodeView LLVMBitReader LLVMCore \
+LLVMRemarks LLVMBitstreamReader LLVMBinaryFormat LLVMSupport LLVMDemangle"
+# CMake pulls in whatever else those depend on, so this list only has to name
+# airconv's own dependencies (dxmt/src/airconv/meson.build's llvm_deps, minus
+# LLVMObjCARCOpts, which has not existed as its own library since LLVM 12).
+#
+# Only targets that were actually configured are built. A name that this
+# configuration does not create -- several of these are conditional on the
+# target backends, and LLVM_TARGETS_TO_BUILD is empty -- would otherwise make
+# make stop with "No rule to make target".
+configured="$(find "$OUT" -maxdepth 7 -type d -path '*/CMakeFiles/*.dir' 2>/dev/null \
+    | sed 's|.*/CMakeFiles/||; s|\.dir$||' | sort -u)"
+build_targets=""
+for t in $LLVM_TARGETS_NEEDED; do
+    case "$configured" in
+        *"$t"*) build_targets="$build_targets $t" ;;
+    esac
+done
+if [ -z "$build_targets" ]; then
+    echo "    no named targets found; building everything"
+    cmake --build "$OUT" -j "$JOBS"
+else
+    echo "    building:$(echo "$build_targets" | wc -w | tr -d ' ') targets"
+    cmake --build "$OUT" --target $build_targets -j "$JOBS"
+fi
 
 test -f "$OUT/lib/libLLVMCore.a" || { echo "::error::libLLVMCore.a missing after the iOS build"; exit 1; }
 test -f "$OUT/include/llvm/Config/llvm-config.h" \
