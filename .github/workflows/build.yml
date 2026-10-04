@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# Builds both variants of the fork on a macOS runner and uploads unsigned IPAs.
+#
+# HONEST STATUS - READ BEFORE TRUSTING A GREEN TICK
+# This workflow is structurally complete but is NOT expected to produce a
+# runnable IPA on its first execution, for reasons that are properties of the
+# upstream project and not of this file:
+#
+#  1. Three build inputs are deliberately not in the repository (upstream
+#     docs/BUILDING.md, "Inputs that are not in the repository"):
+#       * toolchains/llvm-mingw-...      downloadable, pinned hash below.
+#       * toolchains/llvm-ios-build/     an LLVM cross-compiler built FOR iOS.
+#                                        This is a multi-hour build that alone
+#                                        needs far more disk and RAM than a
+#                                        GitHub macOS runner has. It is gated
+#                                        behind the `heavy-toolchain` input so
+#                                        the cheap path runs by default.
+#       * app/Madeira/x86_64-vcruntime/  Microsoft's VC++ runtime DLLs. These
+#                                        cannot be redistributed. Supply them as
+#                                        the base64 secret VCREDIST_B64.
+#       * Apple's Metal Shader Converter, licence-bound. Only needed to REBUILD
+#         the converter; the library itself is already tracked, so a normal
+#         build does not need it.
+#  2. Upstream ships Debug as the only configuration that runs games ("Release
+#     builds have crashed the guest"), so this workflow builds Debug only. That
+#     is deliberate, not an oversight.
+#  3. An unsigned IPA still needs signing before it can be installed. See
+#     GUIDE.md; Sideloadly and SideStore do that from the IPA.
+#
+# What this workflow DOES guarantee, even when the heavy toolchain is absent:
+#   - the submodules really resolve, on a clean checkout;
+#   - the Xcode project is structurally valid and lists the new Variant sources;
+#   - the JIT invariants hold (below), which is the part that actually makes
+#     the app work on device.
+
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      heavy_toolchain:
+        description: "Build LLVM-for-iOS from source (hours, needs a big runner)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-jit-invariants:
+    # Cheap, fast, and the single most useful gate: it fails loudly if a future
+    # edit drops an entitlement or changes the build configuration, which is the
+    # usual reason "the app installed but nothing runs".
+    name: Verify JIT and packaging invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Entitlements required for JIT are present
+        run: |
+          set -euo pipefail
+          f=app/Madeira/Madeira.entitlements
+          for key in get-task-allow com.apple.security.cs.allow-jit; do
+            if ! grep -q "$key" "$f"; then
+              echo "::error file=$f::missing entitlement $key - JIT will not work"
+              exit 1
+            fi
+          done
+          echo "get-task-allow and allow-jit present"
+
+      - name: The JIT helper extension and framework are still shipped
+        run: |
+          set -euo pipefail
+          test -d app/MadeiraJITHelper || { echo "::error::JIT helper sources missing"; exit 1; }
+          test -d app/Frameworks/StikJIT.xcframework || { echo "::error::StikJIT framework missing"; exit 1; }
+          echo "helper + StikJIT present"
+
+      - name: The JIT script and URL scheme are intact
+        run: |
+          set -euo pipefail
+          test -f app/Madeira/madeira-jit.js || { echo "::error::madeira-jit.js missing"; exit 1; }
+          grep -q '<string>madeira</string>' app/Madeira/Info.plist \
+            || { echo "::error::madeira:// URL scheme not registered"; exit 1; }
+          echo "JIT script + URL scheme present"
+
+      - name: The variant sources are in the Xcode target
+        run: |
+          set -euo pipefail
+          for f in AppVariant JitManager MadeiraBrowserView WindowsInstallerBridge PointerMode LinuxEnvironmentStore; do
+            grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
+              || { echo "::error::$f.swift is not in the Sources phase"; exit 1; }
+          done
+          echo "all six Variant sources are compiled by the Madeira target"
+
+      - name: Project file is structurally valid
+        run: python3 tools/check_pbxproj.py
+
+  build:
+    name: ${{ matrix.variant }}
+    needs: verify-jit-invariants
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: windows
+            # Debug only, on purpose. See the header comment.
+            variant_flag: ""
+            runner: macos-15
+          - variant: linux
+            variant_flag: MADEIRA_VARIANT_LINUX
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Confirm the submodules resolved
+        run: |
+          set -euo pipefail
+          for d in FEX wine dxmt madeira-dock; do
+            n=$(ls -A "$d" | wc -l | tr -d ' ')
+            [ "$n" -gt 0 ] || { echo "::error::$d is empty - the fork's submodule commit is not reachable"; exit 1; }
+            echo "$d OK"
+          done
+
+      - name: Cache the toolchain inputs
+        uses: actions/cache@v4
+        with:
+          path: toolchains
+          key: toolchain-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
+          restore-keys: toolchain-${{ matrix.variant }}-
+
+      - name: Fetch llvm-mingw (pinned upstream hash)
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          curl -fSL "$url" -o /tmp/llvm-mingw.tar.xz
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  /tmp/llvm-mingw.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/llvm-mingw.tar.xz -C toolchains
+
+      - name: Fetch the VC++ runtime (not redistributable; comes from a secret)
+        env:
+          VCREDIST_B64: ${{ secrets.VCREDIST_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VCREDIST_B64:-}" ]; then
+            echo "::warning::VCREDIST_B64 not set. Microsoft VC++ runtime DLLs are not"
+            echo "::warning::redistributable, so they are not in the repo. The build will"
+            echo "::warning::continue without them; some 64-bit programs need them."
+            mkdir -p app/Madeira/x86_64-vcruntime
+            exit 0
+          fi
+          mkdir -p app/Madeira/x86_64-vcruntime
+          echo "$VCREDIST_B64" | base64 --decode | tar -xz -C app/Madeira/x86_64-vcruntime
+
+      - name: Build LLVM for iOS (gated)
+        if: ${{ inputs.heavy_toolchain || false }}
+        run: bash build/ci/build-llvm-ios.sh
+
+      - name: Build the native pieces
+        run: |
+          set -euo pipefail
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/fex-ios/build.sh
+          bash build/ntdll-unix/build.sh
+          bash build/wineserver/build.sh
+          bash build/win32u-unix/build.sh
+
+      - name: Build the app (Debug - the only configuration that runs)
+        run: |
+          set -euo pipefail
+          flags=""
+          if [ -n "${{ matrix.variant_flag }}" ]; then
+            flags="MADEIRA_VARIANT_LINUX=1"
+          fi
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            "$flags" \
+            build
+
+      - name: Package the unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf Payload dist && mkdir -p Payload dist
+          app=$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name 'Madeira.app' -path '*Debug-iphoneos*' | head -1)
+          test -n "$app" || { echo "::error::no Madeira.app was produced"; exit 1; }
+          cp -R "$app" Payload/
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Madeira.app/Info.plist > dist/bundle-id.txt
+          zip -qry "dist/Madeira-${{ matrix.variant }}-unsigned.ipa" Payload
+          rm -rf Payload
+          ls -la dist
+
+      - name: Record what was actually built
+        run: |
+          set -euo pipefail
+          {
+            echo "variant: ${{ matrix.variant }}"
+            echo "configuration: Debug"
+            echo "bundle id: $(cat dist/bundle-id.txt)"
+            echo "note: unsigned. Sign it with Sideloadly or SideStore, see GUIDE.md."
+          } | tee build-info.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-${{ matrix.variant }}-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 30
