@@ -358,6 +358,55 @@ Status key: `not started` / `in progress` / `done` / `untested` / `infeasible` /
     blocks all LAN traffic (`WSAEACCES`, even to the gateway); the fix is
     Proton's own "Allow LAN connections" toggle.
 
+## 9b. SESSION 4 — THE FIRST REAL BUILDS, AND WHAT THEY FOUND
+
+CI had never got past the LLVM step. Once it did, each run bought a real
+answer. Nothing below is inferred; every item is a thing a run printed.
+
+**Proven to work on a runner (all previously UNVERIFIED):**
+
+| Stage | Result |
+|---|---|
+| `gnutls-ios` | GMP, Nettle and GnuTLS build; `libgnutls.a` is arm64 |
+| `ffmpeg` | builds; `libavformat/avcodec/swresample/avutil.a` produced |
+| `Provide LLVM headers` | the official 15.0.7 headers extract and satisfy DXMT |
+| `dxmt-ios` | ~90 of ~92 objects compile against them, including every airconv file |
+| `verify-jit-invariants` | passes, now 7 checks |
+
+**The four defects this session found and fixed:**
+
+1. **FEX would not configure.** `-DCMAKE_SYSTEM_NAME=iOS` leaves
+   `CMAKE_SYSTEM_PROCESSOR` unset on the runner's CMake, and FEX opens with
+   `string(TOLOWER ${CMAKE_SYSTEM_PROCESSOR} processor)`, which dies as
+   "string no output variable specified" and reports "Unsupported processor
+   type" two errors later. `build/fex-ios/build.sh` now passes `arm64`
+   explicitly and discards a cache a dead configure left behind.
+2. **The Linux variant was Windows.** `MADEIRA_VARIANT_LINUX=1` was passed to
+   `xcodebuild` as a bare build setting, and a build setting with no consumer
+   sets nothing: `#if MADEIRA_VARIANT_LINUX` in `AppVariant.swift` never saw
+   it, so the "linux" job would have shipped a second Windows build. The
+   target's `SWIFT_ACTIVE_COMPILATION_CONDITIONS` now forwards
+   `$(MADEIRA_VARIANT_FLAG)`, the matrix gives the variant its own bundle id
+   (`com.willfaust.madeira.linux`, so both can be installed at once and
+   SideStore's source points at something real), and the invariant job fails if
+   that wiring is removed again.
+3. **The stage workflow's LLVM download had nowhere to write.** Its
+   `toolchains/` directory is created by the llvm-mingw step, which is skipped
+   for `dxmt-ios`, and a cache miss creates nothing either, so `curl -o` failed
+   with exit 56.
+4. **`libdxmt_combined.a` had no producer.** This is the one that gated every
+   IPA. The app's Frameworks phase links it; it is DXMT's unix side plus
+   airconv plus **LLVM's static archives**, and `dxmt-ios/build.sh` never built
+   the LLVM half -- upstream made that file by hand. `build/ci/build-llvm-ios.sh`
+   now cross-builds LLVM 15.0.7 for iOS (upstream's documented flags plus the
+   `AddLLVM.cmake` `Darwin|iOS` patch), `.github/workflows/heavy.yml` runs it on
+   demand and caches it under `llvm-ios-*`, and `build/dxmt-ios/combine.sh`
+   merges the two halves with `libtool`.
+
+**Still open at the time of writing:** two DXMT objects do not compile
+(`winemetal_unix`, `airconv_context`); the compiler diagnostics were being
+written to `.err` files that never reached the log, which is itself fixed.
+
 ## 10. NEXT ACTIONS FOR A HUMAN
 
 1. **Test JIT on the iPad first.** Everything else is blocked behind it (§3).

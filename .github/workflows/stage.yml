@@ -49,6 +49,12 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Select an Xcode with the iOS 26 SDK
+        # The image's default Xcode is too old: DXMT's winemetal_unix.c calls
+        # MTLFXFrameInterpolatorDescriptor, which only exists from the iOS 26
+        # SDK, and the Metal toolchain moved out of the box in Xcode 26.
+        run: bash build/ci/select-xcode.sh
+
       - name: Cache the toolchain inputs
         uses: actions/cache@v4
         with:

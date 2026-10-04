@@ -200,6 +200,36 @@ echo "=== winemetal unix (Objective-C) ==="
 compile_objc "$DXMT_SRC/winemetal/unix/winemetal_unix.c" winemetal_unix
 compile_objc "$DXMT_SRC/winemetal/unix/cache.c"          cache
 
+echo "=== MADEIRA: airconv shader headers (generated) ==="
+# airconv_context.cpp includes air_msad.h, air_samplepos.h and air_tessellation.h.
+# They are not in the tree: dxmt/src/airconv/meson.build generates them from the
+# .metal sources, and nothing here did, so the first airconv file failed with
+# "'air_msad.h' file not found". Same chain as meson, same flags:
+#     xcrun -sdk macosx metal -std=<std> --target=air64-apple-macos14.0 -o X.air -c X.metal
+#     xxd -n X -i X.air X.h
+# Note the shaders stop at .air; only dxmt_command goes on to a metallib.
+AIRCONV_SHADERS="air_msad air_samplepos air_tessellation"
+for s in $AIRCONV_SHADERS; do
+    metal="$DXMT_SRC/airconv/shaders/$s.metal"
+    air="$BUILD_DIR/shader-headers/$s.air"
+    header="$BUILD_DIR/shader-headers/$s.h"
+    [ -f "$metal" ] || { echo "::error::missing $metal" >&2; exit 1; }
+    if [ -f "$header" ] && [ "$header" -nt "$metal" ] && [ "$header" -nt "$0" ]; then
+        printf "  %-40s CACHED\n" "$s.h"
+        continue
+    fi
+    printf "  %-40s " "$s.h"
+    mkdir -p "$BUILD_DIR/shader-headers"
+    xcrun -sdk macosx metal -std="${DXMT_METAL_STD:-metal3.1}" \
+        --target=air64-apple-macos14.0 -o "$air" -c "$metal" \
+        && xxd -n "$s" -i "$air" "$header" \
+        && echo "OK"
+    [ -f "$header" ] || { echo "::error::$s.h was not generated" >&2; exit 1; }
+done
+
+# The include path the shaders are found through. meson puts the generated
+# headers next to the sources; "-I$BUILD_DIR/shader-headers" is already in
+# INCLUDES_SHADERS, so only the airconv loop needs to see them.
 echo "=== airconv (C++ 20, needs LLVM headers) ==="
 for cpp in airconv_context.cpp air_type.cpp air_signature.cpp air_operations.cpp \
            dxbc_converter.cpp dxbc_converter_gs.cpp dxbc_converter_ts.cpp \

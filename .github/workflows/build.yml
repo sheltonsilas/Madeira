@@ -148,6 +148,12 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Select an Xcode with the iOS 26 SDK
+        # See build/ci/select-xcode.sh: the image's default Xcode is too old for
+        # MetalFX frame interpolation in DXMT and does not have to have the
+        # Metal toolchain the shader headers are generated with.
+        run: bash build/ci/select-xcode.sh
+
       - name: Confirm the submodules resolved
         run: |
           set -euo pipefail
