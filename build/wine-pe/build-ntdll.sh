@@ -21,6 +21,10 @@ B="$R/wine/build-arm64ec"
 if [ ! -f "$B/config.status" ]; then
     mkdir -p "$B" && cd "$B" && ../configure --enable-archs=arm64ec --without-x --disable-tests --enable-winegstreamer
 fi
+# This tree needs its own host tools: every generated Makefile and every PE link
+# uses winebuild and widl, and nothing builds them implicitly. See
+# build/ci/build-wine-tools.sh for why `make tools` is not enough.
+bash "$R/build/ci/build-wine-tools.sh" "$B"
 cd "$B" && make -C dlls/ntdll
 SRC="$B/dlls/ntdll/arm64ec-windows/ntdll.dll"; OUT="$R/app/Madeira/arm64ec-windows/ntdll.dll"
 cp "$SRC" "$OUT.tmp"

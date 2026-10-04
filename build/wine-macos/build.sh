@@ -61,16 +61,11 @@ if [ ! -f "$B/config.status" ]; then
                              --without-freetype --without-gnutls --disable-tests)
 fi
 
-echo "=== host tools (winebuild, widl) ==="
-make -C "$B" -j "$JOBS" tools
+echo "=== host tools (makedep, widl, winebuild, wrc, wmc) ==="
+bash "$R/build/ci/build-wine-tools.sh" "$B"
 
-# Assert the things the unix-side compiles actually include, so a missing one is
-# reported here instead of as 36 unrelated compile failures.
-for f in include/config.h include/version.h tools/winebuild/winebuild tools/widl/widl; do
-    if [ ! -e "$B/$f" ]; then
-        echo "::error::wine/build-macos/$f is missing; the iOS unix-side builds would fail"
-        exit 1
-    fi
-    echo "    ok $f"
-done
+# config.h is what the iOS unix-side scripts force-include; assert it here so a
+# missing tree is one clear line, not 36 unrelated compile failures.
+test -f "$B/include/config.h" \
+    || { echo "::error::wine/build-macos/include/config.h is missing"; exit 1; }
 echo "=== wine/build-macos is ready ==="
