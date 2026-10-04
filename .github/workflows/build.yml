@@ -170,15 +170,49 @@ jobs:
         if: ${{ inputs.heavy_toolchain || false }}
         run: bash build/ci/build-llvm-ios.sh
 
-      - name: Build the native pieces
+      - name: Point the LLVM include paths at Xcode's toolchain
+        # Upstream expects a custom LLVM cross-built for iOS at
+        # toolchains/llvm-ios-build, which costs hours to produce and is the
+        # reason this workflow cannot be a plain "push and it builds".
+        #
+        # Inspecting build/dxmt-ios/build.sh shows LLVM_BUILD is used ONLY as an
+        # include path and for hashing llvm-config.h into the shader cache key:
+        #     LLVM_INCLUDES="-I$LLVM_BUILD/include -I$LLVM_SRC/include"
+        # Nothing links LLVM_BUILD/lib. Xcode ships the same public LLVM headers
+        # (including llvm/Config/llvm-config.h) in its own toolchain, so a
+        # symlink farm satisfies it.
+        #
+        # UNTIL THIS HAS RUN GREEN ON A RUNNER, treat it as an untested
+        # substitution: Xcode's LLVM is a different version from upstream's
+        # 15.0.7, and DXMT may need a matching version. If this step's successor
+        # fails inside dxmt-ios, the honest fix is a real LLVM-for-iOS build on
+        # a machine with enough disk and RAM, not a more clever symlink.
         run: |
           set -euo pipefail
-          bash build/gnutls-ios/build.sh
-          bash build/ffmpeg/build.sh
-          bash build/fex-ios/build.sh
-          bash build/ntdll-unix/build.sh
-          bash build/wineserver/build.sh
-          bash build/win32u-unix/build.sh
+          XCODE_TC="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+          test -d "$XCODE_TC/usr/include/llvm" || {
+            echo "::error::Xcode toolchain has no LLVM headers at $XCODE_TC/usr/include/llvm"
+            exit 1
+          }
+          mkdir -p toolchains/llvm-ios-build toolchains/llvm-project/llvm
+          ln -sfn "$XCODE_TC/usr/include" toolchains/llvm-ios-build/include
+          ln -sfn "$XCODE_TC/usr/include" toolchains/llvm-project/llvm/include
+          ln -sfn "$XCODE_TC/usr/lib"     toolchains/llvm-ios-build/lib
+          echo "llvm-config.h: $(ls "$XCODE_TC/usr/include/llvm/Config/llvm-config.h")"
+
+      - name: Build the native pieces
+        # Only the iOS static libraries are built here. The Windows PE modules
+        # (arm64ec-windows/, aarch64-windows/) are already tracked in git, so
+        # the first linkable app does not need llvm-mingw's PE builds; those
+        # scripts stay available for a from-scratch PE rebuild.
+        run: |
+          set -euo pipefail
+          for s in gnutls-ios/build.sh ffmpeg/build.sh fex-ios/build.sh \
+                   ntdll-unix/build.sh wineserver/build.sh win32u-unix/build.sh \
+                   dxmt-ios/build.sh rppairing-ios/build.sh; do
+            echo "=== build/$s ==="
+            bash "build/$s"
+          done
 
       - name: Build the app (Debug - the only configuration that runs)
         run: |
