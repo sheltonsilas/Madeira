@@ -15,6 +15,14 @@ REPO_ROOT="$(cd "$BUILD_DIR/../.." && pwd)"
 TARGET=aarch64-apple-ios
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 
+# A fresh runner ships the stable toolchain for the HOST only, so `cargo build
+# --target aarch64-apple-ios` dies with "can't find crate for `core`" and the
+# unhelpful "the aarch64-apple-ios target may not be installed". Install it here
+# rather than in build.yml, so a hand run, the stage workflow and a full build.yml
+# all behave the same way -- and so this script is not silently dependent on
+# whatever the image happens to carry. `rustup target add` is idempotent.
+rustup target add "$TARGET"
+
 cd "$BUILD_DIR"
 cargo build --release --locked --target "$TARGET"
 cp "target/$TARGET/release/libmadeira_rppairing.a" "$REPO_ROOT/app/Madeira/libmadeira_rppairing.a"
