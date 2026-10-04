@@ -33,6 +33,18 @@ mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
+# Adopt a run that is already in flight instead of dispatching a duplicate.
+# Re-running the driver after a restart must not leave two runs racing for
+# the same stage, and both would compile into the same caches.
+in_flight_run() {
+    api "https://api.github.com/repos/$REPO/actions/workflows/stage.yml/runs?branch=$BRANCH&per_page=1" \
+        | python3 -c "
+import json, sys
+rs = json.load(sys.stdin).get('workflow_runs', [])
+print(rs[0]['id'] if rs and rs[0].get('status') != 'completed' else '')
+" 2>/dev/null || echo ""
+}
+
 if [ ! -f "$TOKEN_FILE" ]; then
     log "FATAL: no token at $TOKEN_FILE"
     exit 1
@@ -87,22 +99,33 @@ wait_for_run() {   # wait_for_run <run_id> -> echoes conclusion
     done
 }
 
+# wait_for_run runs inside $(...), which captures everything it writes to
+# stdout. Its progress lines were therefore swallowed into the returned
+# conclusion string and never reached the log file, so a live run looked
+# exactly like a hung one. Have log() write to stderr, which command
+# substitution does not capture.
+log() { echo "[$(date -u +%H:%M:%S)] $*" >&2; }
+
 for iter in $(seq 1 "$MAX"); do
     log "=== iteration $iter/$MAX: stage $STAGE ==="
-    dispatch || exit 1
-    sleep 40   # let the run register before looking it up
 
-    run=""
-    for i in 1 2 3 4 5 6; do
-        run=$(api "https://api.github.com/repos/$REPO/actions/workflows/stage.yml/runs?branch=$BRANCH&per_page=1" \
-              | python3 -c "
+    run="$(in_flight_run)"
+    if [ -n "$run" ]; then
+        log "adopting the run already in flight: $run"
+    else
+        dispatch || exit 1
+        sleep 40   # let the run register before looking it up
+        for i in 1 2 3 4 5 6; do
+            run=$(api "https://api.github.com/repos/$REPO/actions/workflows/stage.yml/runs?branch=$BRANCH&per_page=1" \
+                  | python3 -c "
 import json,sys
 rs=json.load(sys.stdin).get('workflow_runs',[])
 print(rs[0]['id'] if rs else '')
 " 2>/dev/null || echo "")
-        [ -n "$run" ] && break
-        sleep 15
-    done
+            [ -n "$run" ] && break
+            sleep 15
+        done
+    fi
     if [ -z "$run" ]; then log "FATAL: could not find the dispatched run"; exit 1; fi
     log "run $run"
 
