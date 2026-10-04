@@ -23,6 +23,15 @@
 //
 // The probes come straight from app/Madeira/JITAllocator.h, which is already in
 // Madeira-Bridging-Header.h.
+//
+// OVERLAP WITH UPSTREAM, STATED PLAINLY
+// ContentView.swift already has its own `JITStatus` enum, an
+// `isDebuggerAttached()` probe and a `JITCoordinator`. This type does not
+// replace any of that: it is the variant-shared layer that sits on top of the
+// same C probes, so the browser screen and the Linux environment manager can
+// read JIT state without reaching into ContentView's private state. If upstream
+// later promotes its own status to a shared type, this file should collapse
+// into it rather than live alongside it.
 
 import Foundation
 import os.log

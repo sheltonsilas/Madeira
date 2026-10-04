@@ -1195,6 +1195,10 @@ struct ContentView: View {
     @ObservedObject private var library = LibraryModel.shared
     /// "Use New Interface" (actionButtons) applies at the next start.
     @State private var showFrontendRestart = false
+    /// The variant's own front screen: the preinstalled browser on Windows, the
+    /// environment manager on Linux. Presented as a sheet because ContentView
+    /// deliberately contains no NavigationLinks (see the note in `body`).
+    @State private var showVariantScreen = false
 
     enum JITStatus {
         case unknown
@@ -1237,6 +1241,39 @@ struct ContentView: View {
             // under the title, the buttons and the search field behind a
             // progressive blur (as in the App Store), with no hard edge.
             .toolbarBackground(library.enabled && !Self.systemScrollEdge ? .visible : .automatic, for: .navigationBar)
+            // The variant's entry point, next to the existing library controls.
+            // Hidden once a session is running: a game owns the screen then.
+            .toolbar {
+                if !library.enabled || library.current == nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showVariantScreen = true
+                        } label: {
+                            Label(activeVariant.displayName,
+                                  systemImage: activeVariant.symbol)
+                        }
+                    }
+                }
+            }
+            // Let a downloaded installer start a program the same way a library
+            // entry does. The bridge deliberately does not own the session:
+            // ContentView does, via wine_process_start.
+            .onAppear {
+                WindowsInstallerBridge.shared.launchHandler = { relative in
+                    var entry = LibraryEntry(
+                        title: (relative as NSString).lastPathComponent,
+                        relativePath: relative,
+                        bits: 64)
+                    entry.arguments = ""
+                    launchLibraryEntry(entry)
+                }
+            }
+            .sheet(isPresented: $showVariantScreen) {
+                switch activeVariant {
+                case .windows: MadeiraBrowserView()
+                case .linux: NavigationStack { LinuxEnvironmentManagerView() }
+                }
+            }
             .navigationBarHidden(library.enabled ? library.current != nil : vSizeClass == .compact)
             // A second session cannot start in this process; offer to close Madeira.
             .alert("Restart Madeira", isPresented: Binding(get: { library.restartNotice != nil },
