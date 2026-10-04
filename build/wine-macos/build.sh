@@ -32,6 +32,24 @@ TC="$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 B="$R/wine/build-macos"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
+# macOS ships bison 2.3 and Wine's configure refuses it: "Your bison version is
+# too old. Please install bison version 3.0 or newer." Homebrew is already on
+# the runner image, so install it there rather than failing.
+bison_major() { bison --version 2>/dev/null | head -1 | sed 's/[^0-9]*\([0-9][0-9.]*\).*/\1/' | cut -d. -f1; }
+if [ "$(bison_major || echo 0)" -lt 3 ] 2>/dev/null; then
+    if command -v brew >/dev/null 2>&1; then
+        echo "=== bison: $(bison --version 2>/dev/null | head -1 || echo none); installing a newer one ==="
+        brew install bison >/dev/null 2>&1 || brew upgrade bison >/dev/null 2>&1 || true
+        export PATH="$(brew --prefix 2>/dev/null)/bin:$PATH"
+        hash -r 2>/dev/null || true
+        echo "    now: $(bison --version 2>/dev/null | head -1 || echo still none)"
+    fi
+fi
+if [ "$(bison_major || echo 0)" -lt 3 ] 2>/dev/null; then
+    echo "::error::Wine's configure needs bison 3.0 or newer and it could not be installed"
+    exit 1
+fi
+
 # configure needs an aarch64 Windows cross compiler to resolve --enable-archs.
 if [ -x "$TC/aarch64-w64-mingw32-gcc" ]; then
     export PATH="$TC:$PATH"
