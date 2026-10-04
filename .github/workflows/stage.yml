@@ -23,6 +23,8 @@ on:
           - gnutls-ios
           - ffmpeg
           - fex-ios
+          - wine-macos
+          - wine-unix
           - ntdll-unix
           - wineserver
           - win32u-unix
@@ -63,7 +65,7 @@ jobs:
           restore-keys: toolchain-stage-
 
       - name: Fetch llvm-mingw
-        if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        if: ${{ inputs.stage == 'wine-macos' || inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' || inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
         run: |
           set -euo pipefail
           mkdir -p toolchains
@@ -114,6 +116,7 @@ jobs:
         run: |
           # Both PE stages need the unix side built first and a configured
           # wine/build-arm64ec tree; building ntdll is what creates it.
+          bash build/wine-macos/build.sh
           bash build/ntdll-unix/build.sh
           test -f wine/build-arm64ec/config.status \
             || { echo "::error::wine/build-arm64ec is not configured after build-ntdll.sh"; exit 1; }
@@ -126,6 +129,14 @@ jobs:
             llvm-headers) echo "headers only; nothing to build" ;;
             wine-pe) bash build/wine-pe/build-ntdll.sh ;;
             wine-pe-universal) bash build/wine-pe/build-universal.sh ;;
+            # All three app-side Wine libraries in one go: they share the
+            # wine/build-macos tree, so testing them apart would pay that
+            # configure three times.
+            wine-unix)
+              bash build/ntdll-unix/build.sh
+              bash build/wineserver/build.sh
+              bash build/win32u-unix/build.sh
+              ;;
             *) bash "build/${{ inputs.stage }}/build.sh" ;;
           esac
 

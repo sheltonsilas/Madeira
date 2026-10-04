@@ -302,6 +302,7 @@ jobs:
         run: |
           set -euo pipefail
           for s in gnutls-ios/build.sh ffmpeg/build.sh fex-ios/build.sh \
+                   wine-macos/build.sh \
                    ntdll-unix/build.sh wineserver/build.sh win32u-unix/build.sh \
                    wine-pe/build-ntdll.sh wine-pe/build-universal.sh \
                    dxmt-ios/build.sh dxmt-ios/combine.sh \
