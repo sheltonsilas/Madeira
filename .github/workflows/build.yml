@@ -11,12 +11,17 @@
 #  1. Three build inputs are deliberately not in the repository (upstream
 #     docs/BUILDING.md, "Inputs that are not in the repository"):
 #       * toolchains/llvm-mingw-...      downloadable, pinned hash below.
-#       * toolchains/llvm-ios-build/     an LLVM cross-compiler built FOR iOS.
-#                                        This is a multi-hour build that alone
-#                                        needs far more disk and RAM than a
-#                                        GitHub macOS runner has. It is gated
-#                                        behind the `heavy-toolchain` input so
-#                                        the cheap path runs by default.
+#       * toolchains/llvm-ios-build/     LLVM 15's static libraries built FOR
+#                                        iOS, which is what makes the D3D path
+#                                        linkable at all: airconv, inside
+#                                        libdxmt_combined.a, calls into them.
+#                                        build/ci/build-llvm-ios.sh builds it
+#                                        and it is gated behind the
+#                                        `heavy_toolchain` input because it
+#                                        takes about an hour. Its output is
+#                                        cached, so it is paid for once; the
+#                                        cache is keyed llvm-ios-* and this
+#                                        job restores it.
 #       * app/Madeira/x86_64-vcruntime/  Microsoft's VC++ runtime DLLs. These
 #                                        cannot be redistributed. Supply them as
 #                                        the base64 secret VCREDIST_B64.
@@ -157,7 +162,9 @@ jobs:
         with:
           path: toolchains
           key: toolchain-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
-          restore-keys: toolchain-${{ matrix.variant }}-
+          restore-keys: |
+            toolchain-${{ matrix.variant }}-
+            llvm-ios-
 
       - name: Fetch llvm-mingw (pinned upstream hash)
         run: |
@@ -183,11 +190,19 @@ jobs:
           mkdir -p app/Madeira/x86_64-vcruntime
           echo "$VCREDIST_B64" | base64 --decode | tar -xz -C app/Madeira/x86_64-vcruntime
 
-      - name: Build LLVM for iOS (gated)
+      - name: Build LLVM 15 for iOS (gated, about an hour, cached)
+        # Restored from the llvm-ios-* cache when a previous run built it, in
+        # which case build-llvm-ios.sh returns immediately.
         if: ${{ inputs.heavy_toolchain || false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash build/ci/build-llvm-ios.sh
 
-      - name: Provide LLVM headers for dxmt-ios
+      - name: Provide LLVM headers for dxmt-ios (only without the real build)
+        # When build/ci/build-llvm-ios.sh has run, toolchains/llvm-ios-build is
+        # the genuine iOS build and its own generated headers must not be
+        # replaced by this substitution.
+        if: ${{ !(inputs.heavy_toolchain || false) }}
         # Upstream wants an LLVM cross-built for the iOS triple at
         # toolchains/llvm-ios-build, which takes hours and is why a hosted runner
         # cannot produce it. But reading build/dxmt-ios/build.sh shows LLVM_BUILD
@@ -283,7 +298,8 @@ jobs:
           for s in gnutls-ios/build.sh ffmpeg/build.sh fex-ios/build.sh \
                    ntdll-unix/build.sh wineserver/build.sh win32u-unix/build.sh \
                    wine-pe/build-ntdll.sh wine-pe/build-universal.sh \
-                   dxmt-ios/build.sh rppairing-ios/build.sh; do
+                   dxmt-ios/build.sh dxmt-ios/combine.sh \
+                   rppairing-ios/build.sh; do
             echo "=== build/$s ==="
             bash "build/$s"
           done

@@ -67,6 +67,10 @@ compile_objc() {
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -80,6 +84,10 @@ compile_cxx() {
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -93,6 +101,10 @@ compile_madeira_cxx() {
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -105,6 +117,10 @@ compile_madeira_c() {
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -122,6 +138,10 @@ compile_objcxx_arc() {
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 if [[ -f "$BUILD_DIR/../madeira-d3d12/deps.sh" ]] && \
@@ -204,6 +224,10 @@ for cpp in BlobContainer.cpp DXBCUtils.cpp ShaderBinary.cpp; do
         echo "OK"; SUCCEEDED=$((SUCCEEDED+1))
     else
         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to be left in $OBJ_DIR/$name.err, which means a
+        # CI log said only "FAILED" and the reason lived in an artifact nobody
+        # downloads. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 done
 
@@ -306,6 +330,10 @@ echo "Results: $SUCCEEDED succeeded, $FAILED failed"
 if [ -n "$FAILED_FILES" ]; then
     echo "Failed:$FAILED_FILES"
     echo "See .err files in $OBJ_DIR/"
+    for name in $FAILED_FILES; do
+        echo "======== $name.err ========"
+        sed -n '1,80p' "$OBJ_DIR/$name.err"
+    done
     exit 1
 fi
 
