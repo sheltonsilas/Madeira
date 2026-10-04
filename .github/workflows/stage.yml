@@ -111,12 +111,21 @@ jobs:
           ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
           echo "LLVM headers ready"
 
+      - name: Preconditions for the Wine stages
+        if: ${{ inputs.stage == 'wine-macos' || inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' || inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # Every iOS unix-side script force-includes
+          # wine/build-macos/include/config.h, so that tree has to exist before
+          # any of them runs. It is not tracked in git and nothing else created
+          # it, which is why 36 of 37 objects in the first run here failed on
+          # the missing header.
+          bash build/wine-macos/build.sh
+
       - name: Preconditions for the Wine PE stages
         if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
         run: |
           # Both PE stages need the unix side built first and a configured
           # wine/build-arm64ec tree; building ntdll is what creates it.
-          bash build/wine-macos/build.sh
           bash build/ntdll-unix/build.sh
           test -f wine/build-arm64ec/config.status \
             || { echo "::error::wine/build-arm64ec is not configured after build-ntdll.sh"; exit 1; }
@@ -147,6 +156,7 @@ jobs:
           bash build/gnutls-ios/build.sh
           bash build/ffmpeg/build.sh
           bash build/fex-ios/build.sh
+          bash build/wine-macos/build.sh
           bash build/ntdll-unix/build.sh
           bash build/wineserver/build.sh
           bash build/win32u-unix/build.sh
