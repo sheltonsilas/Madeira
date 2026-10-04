@@ -1,0 +1,241 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+
+name: release-ipa
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      heavy_toolchain:
+        description: "Build LLVM-for-iOS from source (slow, large runner needed)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.variant }}
+    runs-on: macos-15
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: windows
+            variant_flag: ""
+            bundle_id: com.sheltonsilas.madeira
+          - variant: linux
+            variant_flag: MADEIRA_VARIANT_LINUX
+            bundle_id: com.sheltonsilas.madeira.linux
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Select an Xcode with the iOS 26 SDK
+        run: |
+          set -euo pipefail
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sed 's|.*/Xcode||; s|\.app$||' | sort -V | tail -1 || true)
+          if [ -n "$newest" ]; then
+            sudo xcode-select -s "/Applications/Xcode${newest}.app"
+          fi
+          xcodebuild -version
+          ios_sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iphoneos SDK: $ios_sdk"
+          if [ "${ios_sdk%%.*}" -lt 26 ]; then
+            echo "::error::iphoneos SDK $ios_sdk is older than 26"
+            exit 1
+          fi
+          if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain || sudo xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Confirm the submodules resolved
+        run: |
+          set -euo pipefail
+          for d in FEX wine dxmt madeira-dock; do
+            n=$(ls -A "$d" | wc -l | tr -d ' ')
+            [ "$n" -gt 0 ] || { echo "::error::$d is empty - the submodule commit is not reachable"; exit 1; }
+            echo "$d OK"
+          done
+
+      - name: Cache the toolchain inputs
+        uses: actions/cache@v4
+        with:
+          path: toolchains
+          key: toolchain-release-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
+          restore-keys: |
+            toolchain-release-${{ matrix.variant }}-
+            llvm-ios-
+
+      - name: Fetch llvm-mingw (pinned upstream hash)
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          tarball=toolchains/llvm-mingw.tar.xz
+          [ -f "$tarball" ] || curl -fSL "$url" -o "$tarball"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $tarball" | shasum -a 256 -c -
+          [ -d toolchains/llvm-mingw-20260421-ucrt-macos-universal ] || tar -xJf "$tarball" -C toolchains
+
+      - name: Fetch the VC++ runtime (optional secret)
+        env:
+          VCREDIST_B64: ${{ secrets.VCREDIST_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VCREDIST_B64:-}" ]; then
+            echo "::warning::VCREDIST_B64 not set. Continuing without x86_64 VC++ runtime files."
+            mkdir -p app/Madeira/x86_64-vcruntime
+            exit 0
+          fi
+          mkdir -p app/Madeira/x86_64-vcruntime
+          echo "$VCREDIST_B64" | base64 --decode | tar -xz -C app/Madeira/x86_64-vcruntime
+
+      - name: Build LLVM 15 for iOS (optional)
+        if: ${{ inputs.heavy_toolchain || false }}
+        run: |
+          echo "::warning::Heavy LLVM build is not scripted in this workflow; relying on cached/preprovided LLVM artifacts."
+
+      - name: Provide LLVM headers for dxmt-ios
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f toolchains/llvm-ios-build/lib/libLLVMCore.a ]; then
+            echo "real LLVM-for-iOS build is present; keeping it"
+            exit 0
+          fi
+          VERSION=15.0.7
+          url=$(curl -fsSL -H "Authorization: ******" \
+            "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
+            | python3 -c "
+          import json,platform,sys
+          arch='arm64' if platform.machine() in ('arm64','aarch64') else 'x86_64'
+          for a in json.load(sys.stdin).get('assets',[]):
+              n=a['name']
+              if n.endswith('.tar.xz') and arch in n and 'darwin' in n:
+                  print(a['browser_download_url']); break
+          " || true)
+          test -n "$url" || { echo "::error::no LLVM $VERSION darwin tarball found"; exit 1; }
+          tarball="toolchains/llvm-$VERSION.tar.xz"
+          [ -f "$tarball" ] || curl -fSL --retry 3 "$url" -o "$tarball"
+          root=$(tar -tJf "$tarball" 2>/dev/null | sed -n '1s|/.*||p')
+          test -n "$root" || { echo "::error::could not read LLVM tarball index"; exit 1; }
+          rm -rf /tmp/llvmx toolchains/llvm-ios-build
+          mkdir -p /tmp/llvmx toolchains/llvm-ios-build toolchains/llvm-project/llvm
+          tar -xJf "$tarball" -C /tmp/llvmx "$root/include"
+          mv "/tmp/llvmx/$root/include" toolchains/llvm-ios-build/include
+          test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h \
+            || { echo "::error::llvm-config.h missing"; exit 1; }
+          ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
+
+      - name: Configure Wine build tree and host tools
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:$PATH"
+          if [ ! -f wine/build-macos/config.status ]; then
+            mkdir -p wine/build-macos
+            (cd wine/build-macos && ../configure --enable-archs=aarch64 --without-x --without-vulkan --without-freetype --without-gnutls --disable-tests)
+          fi
+          jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          for d in tools tools/widl tools/winebuild tools/wrc tools/wmc; do
+            [ -f "wine/build-macos/$d/Makefile" ] && make -C "wine/build-macos/$d" -j"$jobs" || true
+          done
+          make -C wine/build-macos/include -j"$jobs"
+          for h in dwrite.h wtypes.h mfobjects.h mftransform.h; do
+            test -f "wine/build-macos/include/$h" || { echo "::error::missing generated wine/build-macos/include/$h"; exit 1; }
+          done
+
+      - name: Cache the native build trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            FEX/build-ios
+            wine/build-macos
+            wine/build-arm64ec
+          key: native-release-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') }}
+          restore-keys: native-release-${{ matrix.variant }}-
+
+      - name: Build the native pieces
+        run: |
+          set -euo pipefail
+          for s in gnutls-ios/build.sh ffmpeg/build.sh freetype-ios/build.sh fex-ios/build.sh \
+                   ntdll-unix/build.sh wineserver/build.sh win32u-unix/build.sh \
+                   wine-pe/build-ntdll.sh dxmt-ios/build.sh rppairing-ios/build.sh; do
+            echo "=== build/$s ==="
+            bash "build/$s"
+          done
+
+      - name: Build libdxmt_combined.a
+        run: |
+          set -euo pipefail
+          test -f build/dxmt-ios/libdxmt_unix.a || { echo "::error::build/dxmt-ios/libdxmt_unix.a missing"; exit 1; }
+          ls toolchains/llvm-ios-build/lib/libLLVM*.a >/dev/null 2>&1 || { echo "::error::LLVM static archives missing"; exit 1; }
+          xcrun libtool -static -o app/Madeira/libdxmt_combined.a \
+            build/dxmt-ios/libdxmt_unix.a toolchains/llvm-ios-build/lib/libLLVM*.a
+          xcrun ranlib app/Madeira/libdxmt_combined.a
+
+      - name: Build the app (Debug)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            MADEIRA_VARIANT_FLAG='${{ matrix.variant_flag }}' \
+            MADEIRA_BUNDLE_IDENTIFIER='${{ matrix.bundle_id }}' \
+            build
+
+      - name: Package the unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf Payload dist && mkdir -p Payload dist
+          app=$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name 'Madeira.app' -path '*Debug-iphoneos*' | head -1)
+          test -n "$app" || { echo "::error::no Madeira.app was produced"; exit 1; }
+          cp -R "$app" Payload/
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Madeira.app/Info.plist > "dist/bundle-id-${{ matrix.variant }}.txt"
+          zip -qry "dist/Madeira-${{ matrix.variant }}-unsigned.ipa" Payload
+          rm -rf Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-${{ matrix.variant }}-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
+            --title "Madeira $tag" \
+            --notes "Automated unsigned IPA release for $tag. Sign with SideStore/AltStore/Sideloadly before install." \
+            dist/*.ipa
+          gh release upload "$tag" dist/*.ipa --clobber
