@@ -128,22 +128,41 @@ in `StikJITHelper.swift`: scheme `stikdebug`, host `enable-jit`, carrying
 
 ---
 
-## 5. WHY NO IPA WAS BUILT
+## 5. WHY NO IPA WAS BUILT (yet) — updated with what CI has proven
 
-Not claimed, and not faked. The chain has two hard links:
+Not claimed, and not faked. What has now been **verified by a real run**, not
+assumed:
 
-1. **This box cannot build iOS.** Windows, no macOS, no Xcode, no WSL, no clang,
-   15 GB free.
-2. **GitHub's macOS runners cannot build LLVM-for-iOS.** Upstream requires an
-   LLVM cross-compiler built for the iOS triple. That is a multi-hour build
-   needing far more disk and RAM than a hosted runner has, and the workflow's
-   `heavy_toolchain` input exists precisely because it cannot be the default.
+- `Confirm the submodules resolved` **PASSED** on both matrix jobs. A recursive
+  clone works on a clean checkout. This directly contradicts upstream's
+  `docs/BUILDING.md`, which claims the fork's submodule commits were never
+  pushed. **That doc is stale** — see §1.
+- The `verify-jit-invariants` job **PASSES on every push**: the three JIT
+  entitlements, the JIT helper extension and StikJIT framework, the JIT script
+  and `madeira://` URL scheme, and all seven Variant sources being in the
+  Sources phase.
+- The llvm-mingw download and SHA-256 verification **PASSED**.
 
-What the workflow *does* guarantee on every push, cheaply and reliably: the
-submodules resolve, the project file is valid, the six new sources are compiled
-by the target, the `madeira://` scheme and JIT script are intact, and the three
-JIT-critical entitlements are present. Those are the checks whose failure
-actually produces "installed but doesn't run".
+The remaining hard link was the LLVM-for-iOS input, and it turned out to be
+smaller than upstream's docs imply. Reading `build/dxmt-ios/build.sh` shows
+`LLVM_BUILD` is **never linked from**. It is used for exactly two things:
+
+```sh
+LLVM_INCLUDES="-I$LLVM_BUILD/include -I$LLVM_SRC/include"   # include path
+"$LLVM_BUILD/include/llvm/Config/llvm-config.h"            # shader cache hash
+```
+
+Xcode ships those same public headers (including `llvm/Config/llvm-config.h`) in
+its own toolchain, so the workflow substitutes a symlink farm
+(`toolchains/llvm-ios-build/include -> <Xcode>/usr/include`).
+
+`build/fex-ios/build.sh` needs nothing special at all — it is plain
+`cmake -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64
+-DCMAKE_OSX_SYSROOT=iphoneos`, which Xcode's clang satisfies.
+
+**UNTESTED:** Xcode's LLVM is not upstream's 15.0.7, so the dxmt-ios step may
+still fail on version skew. If it does, the correct fix is a real LLVM-for-iOS
+build on hardware with enough disk and RAM, not a better symlink.
 
 ---
 
@@ -322,6 +341,22 @@ Status key: `not started` / `in progress` / `done` / `untested` / `infeasible` /
   - Wrote six Swift files, two Python tools, the workflow, GUIDE.md and
     LICENSES/NOTICE. Wired the sources into the Xcode project and verified the
     project file structurally.
+- **Session 3** —
+  - Pushed the branch; the first CI run fired and its `verify-jit-invariants`
+    job passed all checks.
+  - Wired the Variant screens into `ContentView`'s navigation so they are
+    reachable, and added `JitOnboardingView.swift` (the JIT setup wizard).
+  - Found and fixed a real bug in my own tooling: `add_variant_files.py`
+    recreated the Variant group on every run, duplicating its object ID and
+    making the project unopenable. Now incremental, and it refuses to run
+    against an already-duplicated project.
+  - Discovered that only `dxmt-ios` needs the custom LLVM, and only for include
+    paths, so Xcode's headers can stand in. Added that substitution, marked
+    UNTESTED.
+  - Hosted preview: **abandoned at the user's request**. The Android box at
+    192.168.87.3:8022 was reachable in principle but Proton VPN's kernel filter
+    blocks all LAN traffic (`WSAEACCES`, even to the gateway); the fix is
+    Proton's own "Allow LAN connections" toggle.
 
 ## 10. NEXT ACTIONS FOR A HUMAN
 

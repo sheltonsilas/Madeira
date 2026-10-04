@@ -170,35 +170,58 @@ jobs:
         if: ${{ inputs.heavy_toolchain || false }}
         run: bash build/ci/build-llvm-ios.sh
 
-      - name: Point the LLVM include paths at Xcode's toolchain
-        # Upstream expects a custom LLVM cross-built for iOS at
-        # toolchains/llvm-ios-build, which costs hours to produce and is the
-        # reason this workflow cannot be a plain "push and it builds".
-        #
-        # Inspecting build/dxmt-ios/build.sh shows LLVM_BUILD is used ONLY as an
-        # include path and for hashing llvm-config.h into the shader cache key:
+      - name: Provide LLVM headers for dxmt-ios
+        # Upstream wants an LLVM cross-built for the iOS triple at
+        # toolchains/llvm-ios-build, which takes hours and is why a hosted runner
+        # cannot produce it. But reading build/dxmt-ios/build.sh shows LLVM_BUILD
+        # is never linked from; it is used only as an include path and to hash
+        # llvm-config.h into the shader cache key:
         #     LLVM_INCLUDES="-I$LLVM_BUILD/include -I$LLVM_SRC/include"
-        # Nothing links LLVM_BUILD/lib. Xcode ships the same public LLVM headers
-        # (including llvm/Config/llvm-config.h) in its own toolchain, so a
-        # symlink farm satisfies it.
         #
-        # UNTIL THIS HAS RUN GREEN ON A RUNNER, treat it as an untested
-        # substitution: Xcode's LLVM is a different version from upstream's
-        # 15.0.7, and DXMT may need a matching version. If this step's successor
-        # fails inside dxmt-ios, the honest fix is a real LLVM-for-iOS build on
-        # a machine with enough disk and RAM, not a more clever symlink.
+        # So only HEADERS are needed, and they are version-sensitive: DXMT
+        # compiles against LLVM APIs, so upstream's 15.0.7 is the right version.
+        # (Xcode's own toolchain is NOT a source - it ships no public LLVM
+        # headers at .../XcodeDefault.xctoolchain/usr/include/llvm. That was
+        # tried and failed; the error is recorded here so it is not retried.)
+        #
+        # The official 15.0.7 release tarball has the same headers. The asset URL
+        # is discovered through the GitHub API rather than hard-coded, because
+        # the exact asset name has changed capitalisation between releases.
         run: |
           set -euo pipefail
-          XCODE_TC="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
-          test -d "$XCODE_TC/usr/include/llvm" || {
-            echo "::error::Xcode toolchain has no LLVM headers at $XCODE_TC/usr/include/llvm"
+          VERSION=15.0.7
+          url=$(curl -fsSL "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
+            | python3 -c "
+          import json,sys
+          arch='aarch64' if 'arm64' in __import__('platform').machine() else 'x86_64'
+          for a in json.load(sys.stdin)['assets']:
+              n=a['name']
+              if n.endswith('.tar.xz') and arch in n and 'darwin' not in n.lower():
+                  print(a['browser_download_url']); break
+          " || true)
+          if [ -z "$url" ]; then
+            echo "::error::no LLVM $VERSION macOS tarball found for this architecture"
+            exit 1
+          fi
+          echo "fetching $url"
+          curl -fSL --retry 3 "$url" -o llvm.tar.xz
+          mkdir -p toolchains/llvm-ios-build toolchains/llvm-project
+          tar -xJf llvm.tar.xz -C toolchains --strip-components=1 \
+              "*/include" 2>/dev/null || {
+            # Older tarballs place the include dir at the top level.
+            mkdir -p /tmp/llvmx && tar -xJf llvm.tar.xz -C /tmp/llvmx
+            found=$(find /tmp/llvmx -maxdepth 3 -type d -name include | head -1)
+            cp -R "$found" toolchains/llvm-ios-build/include
+          }
+          test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || {
+            echo "::error::llvm-config.h not found after extraction"
+            ls toolchains/llvm-ios-build/include 2>/dev/null || true
             exit 1
           }
-          mkdir -p toolchains/llvm-ios-build toolchains/llvm-project/llvm
-          ln -sfn "$XCODE_TC/usr/include" toolchains/llvm-ios-build/include
-          ln -sfn "$XCODE_TC/usr/include" toolchains/llvm-project/llvm/include
-          ln -sfn "$XCODE_TC/usr/lib"     toolchains/llvm-ios-build/lib
-          echo "llvm-config.h: $(ls "$XCODE_TC/usr/include/llvm/Config/llvm-config.h")"
+          # LLVM_SRC/include is the second -I path; point it at the same tree.
+          mkdir -p toolchains/llvm-project/llvm
+          ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
+          echo "LLVM headers ready: $(grep -m1 LLVM_VERSION_STRING toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || echo ok)"
 
       - name: Build the native pieces
         # Only the iOS static libraries are built here. The Windows PE modules
