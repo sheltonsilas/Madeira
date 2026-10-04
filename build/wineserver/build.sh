@@ -275,32 +275,35 @@ echo "=== Renaming colliding symbols in every .o (objcopy sweep) ==="
 # sweep died with "No such file or directory" on line 308 of this file.
 #
 # `xcrun -f` is NOT the answer either: it resolves through the toolchain's shim
-# directory, and llvm-objcopy is a real binary in usr/bin, so it prints nothing
-# and this script exited with "llvm-objcopy not found". The canonical location is
-# <developer-dir>/Toolchains/XcodeDefault.xctoolchain/usr/bin/llvm-objcopy.
+# directory, while llvm-objcopy lives in usr/bin, so it prints nothing.
 #
-# Search that path, then PATH, then Homebrew, then a find over the Xcode
-# bundles. Only the version numbers and the developer-dir name move between
-# releases, so a search is more durable than any single hardcoded path.
+# Worse, the Xcode 26 toolchain does not ship llvm-objcopy AT ALL -- a find over
+# every /Applications/Xcode*.app found nothing, on a runner that has both 16.4
+# and 26.3. Apple has been trimming the llvm-* tools from the toolchain. So
+# Xcode is not a source for this binary, only Homebrew is.
+#
+# Search PATH and Homebrew first, then install llvm if it is missing. `brew
+# --prefix llvm` resolves the version symlink without hardcoding a version, so
+# nothing here rots between Homebrew releases.
 OBJCOPY=""
-DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
 for cand in \
-    ${DEV_DIR:+"$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/llvm-objcopy"} \
     "$(command -v llvm-objcopy 2>/dev/null || true)" \
+    /opt/homebrew/bin/llvm-objcopy \
     /opt/homebrew/opt/llvm/bin/llvm-objcopy \
-    /opt/homebrew/bin/llvm-objcopy; do
+    "$(ls -1 /opt/homebrew/Cellar/llvm/*/bin/llvm-objcopy 2>/dev/null | sort -V | tail -1)"; do
     if [ -n "$cand" ] && [ -x "$cand" ]; then OBJCOPY="$cand"; break; fi
 done
-if [ -z "$OBJCOPY" ]; then
-    OBJCOPY=$(ls -1 /opt/homebrew/Cellar/llvm/*/bin/llvm-objcopy 2>/dev/null | sort -V | tail -1)
+if [ -z "$OBJCOPY" ] && command -v brew >/dev/null 2>&1; then
+    echo "    llvm-objcopy is not on the runner; installing Homebrew llvm"
+    brew install llvm >/dev/null 2>&1 || brew upgrade llvm >/dev/null 2>&1 || true
+    # --prefix follows the version symlink, so this does not pin a version.
+    cand="$(brew --prefix llvm 2>/dev/null || true)/bin/llvm-objcopy"
+    if [ -n "$cand" ] && [ -x "$cand" ]; then OBJCOPY="$cand"; fi
 fi
 if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
-    OBJCOPY=$(find /Applications/Xcode*.app \
-        -path '*XcodeDefault.xctoolchain/usr/bin/llvm-objcopy' -type f 2>/dev/null | head -1)
-fi
-if [ -z "$OBJCOPY" ] || [ ! -x "$OBJCOPY" ]; then
-    echo "::error::llvm-objcopy not found (tried the Xcode toolchain usr/bin, PATH,"
-    echo "::error::Homebrew opt/Cellar, and a find over /Applications/Xcode*.app)"
+    echo "::error::llvm-objcopy is not available on this runner and Homebrew could not"
+    echo "::error::provide it. Xcode 26 no longer ships it, so this script cannot rename"
+    echo "::error::symbols without it and the app link will collide with win32u."
     exit 1
 fi
 echo "  llvm-objcopy: $OBJCOPY"
