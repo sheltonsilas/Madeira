@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# LLVM 15.0.7 cross-built for iOS/arm64, on demand.
+#
+# This is the one input that cannot be substituted. The app links
+# libdxmt_combined.a, which is DXMT's unix side plus airconv plus LLVM's static
+# archives; airconv is a shader compiler and calls into LLVM, so the archives
+# have to exist for iOS. Without them the app cannot be linked at all, which is
+# why build.yml fails rather than quietly producing a D3D-less app.
+#
+# It is a separate workflow because it takes about an hour and a full build.yml
+# run is 40 minutes on top of that. Run it once; its output goes into the
+# repository's cache under a key that build.yml restores (llvm-ios-*), so every
+# later build gets it in seconds.
+#
+# Disk is why this is its own job: the build needs the whole runner. The script
+# deletes everything except lib/ and include/ before the cache is saved.
+name: llvm-ios
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  llvm-ios:
+    name: LLVM 15 for iOS/arm64
+    runs-on: macos-15
+    # GitHub's hard ceiling for one job; the build is expected to take about an
+    # hour, so this only stops a pathological run.
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The LLVM source is a release tarball, not a submodule, so the
+          # submodules are dead weight here and cost several minutes.
+          submodules: false
+          fetch-depth: 1
+
+      - uses: actions/cache@v4
+        id: llvmcache
+        with:
+          path: |
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-bin
+            toolchains/llvm-project
+          # Versioned by hand rather than hashed from the script: a fix to the
+          # script must not throw away an hour-long build that is still valid.
+          # Bump this only when the produced libraries themselves change.
+          key: llvm-ios-15.0.7-v1
+          restore-keys: |
+            llvm-ios-15.0.7-
+            llvm-ios-
+
+      - name: Report what the cache gave us
+        run: |
+          echo "cache hit: ${{ steps.llvmcache.outputs.cache-hit }}"
+          ls -la toolchains/ 2>/dev/null | head -20
+
+      - name: Build LLVM for iOS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash build/ci/build-llvm-ios.sh
+
+      - name: Show what was produced
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "=== toolchains/llvm-ios-build/lib ==="
+          ls -la toolchains/llvm-ios-build/lib 2>/dev/null | head -45
+          echo "=== archives ==="
+          ls toolchains/llvm-ios-build/lib/*.a 2>/dev/null | wc -l
+          echo "=== llvm-config.h ==="
+          grep -m1 -E 'LLVM_VERSION_STRING|LLVM_DEFAULT_TARGET_TRIPLE' \
+            toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h 2>/dev/null || echo "absent"
+          echo "=== disk ==="
+          du -sh toolchains/* 2>/dev/null | sort -h | tail -10
