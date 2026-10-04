@@ -40,9 +40,15 @@ fi
 TOKEN="$(cat "$TOKEN_FILE")"
 [ -n "$TOKEN" ] || { log "FATAL: empty token"; exit 1; }
 
-api() {   # api <path> [curl args...]
-    local path="$1"; shift
-    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$@"
+# api <url> [extra curl args...]
+#
+# The URL goes FIRST so callers can append flags after it. It was read into a
+# local and then dropped, so every call made with this helper invoked curl with
+# no URL at all -- the driver dispatched a run and then went silent waiting for
+# a lookup that had never happened.
+api() {
+    local url="$1"; shift
+    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$url" "$@"
 }
 
 dispatch() {
