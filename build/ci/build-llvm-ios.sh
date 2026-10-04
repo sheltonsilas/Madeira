@@ -193,7 +193,12 @@ echo "=== cleanup before caching ==="
 # intermediates that are worth nothing once the archives exist, and a repository
 # gets 10 GB of cache in total. Keep lib/ and include/ only. Nothing later needs
 # the rest, because this script returns early whenever the archives are there.
-find "$OUT" -maxdepth 1 -type d ! -name lib ! -name include -exec rm -rf {} + 2>/dev/null || true
+#
+# -mindepth 1 is load-bearing: find also tests its starting point, and without it
+# the starting point does not match `! -name include`, so `rm -rf {}` was handed
+# the whole build tree and deleted lib/ and include/ with everything else. That
+# is what the first run of this script did after a build that had succeeded.
+find "$OUT" -mindepth 1 -maxdepth 1 -type d ! -name lib ! -name include -exec rm -rf {} + 2>/dev/null || true
 find "$OUT" -maxdepth 1 -type f -name 'CMakeCache.txt' -delete 2>/dev/null || true
 find "$OUT" -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
 
