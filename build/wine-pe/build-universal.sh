@@ -94,7 +94,12 @@ echo "Building ARM64EC general-purpose modules into $DEST"
 # (>/dev/null 2>&1) is what made the previous runs unreadable: a target that
 # does not exist and a compiler error look identical in the log.
 build_module() {
-    local dir="$1" label="$2" log="$OBJ_LOG/$label.log"
+    local dir="$1"
+    local label="$2"
+    # Separate declaration: `local a="$1" b="$OBJ/$a.log"` cannot see $a under
+    # `set -u` (which this script runs), and died with "label: unbound
+    # variable" on the first module.
+    local log="$OBJ_LOG/$label.log"
     mkdir -p "$(dirname "$log")"
     if make -C "$B/$dir" >"$log" 2>&1; then
         return 0
