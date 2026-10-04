@@ -5,6 +5,29 @@
 set -eu
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 B="$R/FEX/build-ios"
+
+# FEX's CMake runs Scripts/aarch64_fit_native.py, which does
+# `from pkg_resources import parse_version` -- setuptools, which is not installed
+# for the runner's Python 3.13. The script dies, CMake captures nothing from it,
+# and configure then fails two lines later with "string sub-command STRIP
+# requires two arguments", which points nowhere near the cause. Install
+# setuptools for the interpreter FEX is about to call.
+echo "=== pkg_resources (setuptools) for FEX's configure scripts ==="
+python3 - <<'PY'
+import subprocess, sys
+try:
+    import pkg_resources  # noqa: F401
+    print("    already present")
+    sys.exit(0)
+except ImportError:
+    pass
+for extra in ([], ["--break-system-packages"]):
+    args = [sys.executable, "-m", "pip", "install", "--user", "setuptools<82"] + extra
+    if subprocess.run(args).returncode == 0:
+        print("    installed")
+        sys.exit(0)
+sys.exit("    FAILED to install setuptools")
+PY
 # A configure that died before finishing still leaves a CMakeCache.txt behind
 # (the processor failure above did exactly that), and the guard would then skip
 # reconfiguring and fail later for a confusing reason. Throw away any cache that

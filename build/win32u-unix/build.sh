@@ -61,6 +61,10 @@ compile_one() {
         echo "FAILED"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
+        # Print the diagnostics where the failure is reported. They used to be
+        # left in $OBJ_DIR/$name.err, so a CI log said only "FAILED" and the
+        # reason lived in an artifact nobody downloads.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -134,7 +138,11 @@ fi
 
 if [ $FAILED -gt 0 ]; then
     echo ""
-    echo "(not linking — errors in $OBJ_DIR/<name>.err)"
+    echo "(not linking — errors below)"
+    for name in $FAILED_FILES; do
+        echo "======== $name.err ========"
+        sed -n '1,80p' "$OBJ_DIR/$name.err"
+    done
     exit 1
 fi
 

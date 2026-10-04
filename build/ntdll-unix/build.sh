@@ -43,6 +43,9 @@ compile_one() {
         echo "FAILED"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to stay in $OBJ_DIR/$name.err, so a CI log could
+        # only say FAILED. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -78,6 +81,9 @@ compile_unixlib() {
         echo "FAILED"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
+        # The diagnostics used to stay in $OBJ_DIR/$name.err, so a CI log could
+        # only say FAILED. Print them where the failure is reported.
+        sed -n '1,40p' "$OBJ_DIR/$name.err" | sed 's/^/        /'
     fi
 }
 
@@ -161,6 +167,7 @@ else
     echo "FAILED"
     FAILED=$((FAILED + 1))
     FAILED_FILES="$FAILED_FILES wg_parser_apple_ios"
+    sed -n '1,40p' "$OBJ_DIR/wg_parser_apple_ios.err" | sed 's/^/        /'
 fi
 
 for src in $WINE_SRC/dlls/ntdll/unix/*.c; do
@@ -202,6 +209,10 @@ echo ""
 echo "Results: $SUCCEEDED succeeded, $FAILED failed"
 if [ -n "$FAILED_FILES" ]; then
     echo "Failed:$FAILED_FILES"
+    for name in $FAILED_FILES; do
+        echo "======== $name.err ========"
+        sed -n '1,80p' "$OBJ_DIR/$name.err"
+    done
 fi
 
 echo ""
