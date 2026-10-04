@@ -214,14 +214,17 @@ jobs:
           fi
           echo "fetching $url"
           curl -fSL --retry 3 "$url" -o llvm.tar.xz
-          mkdir -p toolchains/llvm-ios-build toolchains/llvm-project
-          tar -xJf llvm.tar.xz -C toolchains --strip-components=1 \
-              "*/include" 2>/dev/null || {
-            # Older tarballs place the include dir at the top level.
-            mkdir -p /tmp/llvmx && tar -xJf llvm.tar.xz -C /tmp/llvmx
-            found=$(find /tmp/llvmx -maxdepth 3 -type d -name include | head -1)
-            cp -R "$found" toolchains/llvm-ios-build/include
-          }
+          # Resolve the archive's top-level directory instead of extracting a
+          # "*/include" glob. bsdtar exits 0 even when a member pattern matches
+          # nothing, so the glob silently extracted an empty directory and the
+          # || fallback never ran - which is how this step failed once already.
+          root=$(tar -tJf llvm.tar.xz 2>/dev/null | sed -n '1s|/.*||p')
+          test -n "$root" || { echo "::error::could not read the tarball index"; exit 1; }
+          echo "archive root: $root"
+          rm -rf /tmp/llvmx toolchains/llvm-ios-build
+          mkdir -p /tmp/llvmx toolchains/llvm-ios-build toolchains/llvm-project
+          tar -xJf llvm.tar.xz -C /tmp/llvmx "$root/include"
+          mv "/tmp/llvmx/$root/include" toolchains/llvm-ios-build/include
           test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || {
             echo "::error::llvm-config.h not found after extraction"
             ls toolchains/llvm-ios-build/include 2>/dev/null || true
