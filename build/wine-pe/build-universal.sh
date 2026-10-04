@@ -42,6 +42,17 @@
 set -eu
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Wine's configure rejects macOS's bison 2.3, and msi takes it further: it has a
+# real sql.y grammar, and bison 2.3 cannot parse it --
+# "sql.y:61.9-18: syntax error, unexpected identifier, expecting string". That
+# is not a soft check like the configure one; it stops dlls/msi outright. The
+# same fix build/wine-pe/build-ntdll.sh applies is needed here, and the PATH
+# export has to live in THIS script: stage.yml sets it in a separate step, and
+# each step is its own shell, so the export does not carry over.
+bash "$R/build/ci/ensure-bison.sh"
+export PATH="$R/toolchains/bison-3.8.2/bin:$PATH"   # if it had to build one
+
 TC="$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 export PATH="$TC:$PATH"
 B="$R/wine/build-arm64ec"
@@ -78,6 +89,29 @@ copy_one() {
     copied=$((copied + 1))
 }
 
+# explain_missing <name> <expected-file>
+#
+# Prints what actually happened for a module that produced no file. Without
+# this, "produced nothing" was the entire diagnostic, which cannot distinguish
+# a make that failed, a make that succeeded and wrote somewhere else, and a
+# module this Wine does not build for arm64ec at all.
+explain_missing() {
+    local name="$1" file="$2" dir
+    for dir in "$B/dlls/$name" "$B/programs/$name"; do
+        [ -d "$dir" ] || continue
+        echo "  --- $dir ---"
+        if [ -f "$OBJ_LOG/$name.log" ]; then
+            echo "  make said (last 6 lines):"
+            tail -6 "$OBJ_LOG/$name.log" | sed 's/^/  | /'
+        fi
+        echo "  what is in the module dir (depth 2):"
+        find "$dir" -maxdepth 2 -newer "$B/config.status" -type f 2>/dev/null \
+            | head -10 | sed "s|^$B/|  |"
+        echo "  any $file anywhere under it:"
+        find "$dir" -name "$file" 2>/dev/null | head -3 | sed 's/^/  found: /'
+    done
+}
+
 echo "Building ARM64EC general-purpose modules into $DEST"
 
 # build_module <dir> <label>
@@ -100,10 +134,16 @@ build_module() {
     # `set -u` (which this script runs), and died with "label: unbound
     # variable" on the first module.
     local log="$OBJ_LOG/$label.log"
+    # explain_missing looks the log up by bare module name, so mirror it here
+    # as <name>.log. Without this the two names disagree and the diagnostic
+    # silently prints nothing.
+    local mirror="$OBJ_LOG/${label##*/}.log"
     mkdir -p "$(dirname "$log")"
     if make -C "$B/$dir" >"$log" 2>&1; then
+        cp "$log" "$mirror" 2>/dev/null || true
         return 0
     fi
+    cp "$log" "$mirror" 2>/dev/null || true
     echo "  --- make output for $label (tail) ---"
     tail -25 "$log" | sed 's/^/  | /'
     return 1
@@ -115,13 +155,13 @@ for name in $DLLS; do
     # the widest working set this fork can produce, and one absent module must
     # not stop the rest.
     build_module "dlls/$name" "dlls/$name" || echo "  ! make failed for dlls/$name"
-    copy_one "$name" "$name.dll" || echo "  ! dlls/$name produced nothing"
+    copy_one "$name" "$name.dll" || { echo "  ! dlls/$name produced nothing"; explain_missing "$name" "$name.dll"; }
 done
 
 for name in $PROGS; do
     echo "=== programs/$name ==="
     build_module "programs/$name" "programs/$name" || echo "  ! make failed for programs/$name"
-    copy_one "$name" "$name.exe" || echo "  ! programs/$name produced nothing"
+    copy_one "$name" "$name.exe" || { echo "  ! programs/$name produced nothing"; explain_missing "$name" "$name.exe"; }
 done
 
 echo
