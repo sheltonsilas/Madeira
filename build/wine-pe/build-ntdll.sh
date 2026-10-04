@@ -11,6 +11,10 @@
 # `make -C dlls/winegstreamer`, which would also try the GStreamer-based .so.
 set -eu
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# macOS's bison 2.3 fails Wine's configure, and this tree's configure needs it
+# too, exactly as wine/build-macos does. See build/ci/ensure-bison.sh.
+bash "$R/build/ci/ensure-bison.sh"
+export PATH="$R/toolchains/bison-3.8.2/bin:$PATH"   # if it had to build one
 TC="$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 export PATH="$TC:$PATH"
 B="$R/wine/build-arm64ec"
