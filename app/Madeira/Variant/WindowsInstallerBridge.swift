@@ -88,12 +88,23 @@ final class WindowsInstallerBridge: ObservableObject {
         do {
             let staged = try stage(download)
             switch Self.pathExtension(of: download.filename) {
-            case "msi", "msix", "appx":
-                // msiexec understands /quiet /norestart; a bare .msi does not
-                // need a shell. APPX-family packages are installed by the shell,
-                // which is exactly what a bare launch under Wine will invoke.
-                run(relativePath: "windows/system32/msiexec.exe",
-                    arguments: ["/i", "C:\\(staged.windowsPath)", "/quiet", "/norestart"])
+            case "msi":
+                // Only use msiexec when it is actually installed. The arm64ec
+                // farm shipped without it until build/wine-pe/build-universal.sh,
+                // and launching a program that does not exist silently does
+                // nothing at all - which looks exactly like a hung install.
+                if Self.moduleExists("windows/system32/msiexec.exe") {
+                    run(relativePath: "windows/system32/msiexec.exe",
+                        arguments: ["/i", "C:\\(staged.windowsPath)", "/quiet", "/norestart"])
+                } else {
+                    // Run the package itself and let Wine's association or the
+                    // program's own UI handle it.
+                    run(relativePath: staged)
+                }
+            case "msix", "msixbundle", "appx":
+                // App packages are installed by the shell, not msiexec. A bare
+                // launch under Wine is the shell path.
+                run(relativePath: staged)
             default:
                 run(relativePath: staged)
             }
@@ -123,6 +134,13 @@ final class WindowsInstallerBridge: ObservableObject {
         let lower = name.lowercased()
         guard let dot = lower.lastIndex(of: "."), dot != lower.index(before: lower.endIndex) else { return "" }
         return String(lower[lower.index(after: dot)...])
+    }
+
+    /// Is a Wine module present in the prefix? Used before launching a helper
+    /// program whose absence would otherwise fail silently.
+    static func moduleExists(_ relativePath: String) -> Bool {
+        FileManager.default.fileExists(
+            atPath: LibraryModel.drive.appendingPathComponent(relativePath).path)
     }
 }
 

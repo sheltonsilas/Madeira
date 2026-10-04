@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# One stage at a time, on demand. Editor's note: this exists because a full
+# build.yml run costs 10-40 minutes, and a 45-minute session cannot afford
+# several of those to find one compile error. Pick a stage from the dropdown.
+#
+# It shares the toolchain cache with build.yml, so the 614 MB LLVM tarball is
+# downloaded once and reused.
+
+name: stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Which native stage to build"
+        type: choice
+        required: true
+        default: fex-ios
+        options:
+          - llvm-headers
+          - gnutls-ios
+          - ffmpeg
+          - fex-ios
+          - ntdll-unix
+          - wineserver
+          - win32u-unix
+          - wine-pe
+          - wine-pe-universal
+          - dxmt-ios
+          - rppairing-ios
+          - xcodebuild
+      runner:
+        description: "Runner image"
+        type: string
+        default: macos-15
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Cache the toolchain inputs
+        uses: actions/cache@v4
+        with:
+          path: toolchains
+          key: toolchain-stage-${{ inputs.stage }}
+          restore-keys: toolchain-stage-
+
+      - name: Fetch llvm-mingw
+        if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          tarball=toolchains/llvm-mingw.tar.xz
+          [ -f "$tarball" ] || curl -fSL "$url" -o "$tarball"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $tarball" | shasum -a 256 -c -
+          [ -d toolchains/llvm-mingw-20260421-ucrt-macos-universal ] || tar -xJf "$tarball" -C toolchains
+
+      - name: Provide LLVM headers
+        if: ${{ inputs.stage == 'llvm-headers' || inputs.stage == 'dxmt-ios' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=15.0.7
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
+            | python3 -c "
+          import json,platform,sys
+          arch='arm64' if platform.machine() in ('arm64','aarch64') else 'x86_64'
+          for a in json.load(sys.stdin).get('assets',[]):
+              n=a['name']
+              if n.endswith('.tar.xz') and arch in n and 'darwin' in n:
+                  print(a['browser_download_url']); break
+          " || true)
+          test -n "$url" || { echo "::error::no LLVM $VERSION darwin tarball found"; exit 1; }
+          tarball="toolchains/llvm-$VERSION.tar.xz"
+          [ -f "$tarball" ] || curl -fSL --retry 3 "$url" -o "$tarball"
+          root=$(tar -tJf "$tarball" 2>/dev/null | sed -n '1s|/.*||p')
+          test -n "$root" || { echo "::error::could not read the tarball index"; exit 1; }
+          rm -rf /tmp/llvmx toolchains/llvm-ios-build
+          mkdir -p /tmp/llvmx toolchains/llvm-ios-build toolchains/llvm-project
+          tar -xJf "$tarball" -C /tmp/llvmx "$root/include"
+          mv "/tmp/llvmx/$root/include" toolchains/llvm-ios-build/include
+          test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h \
+            || { echo "::error::llvm-config.h missing"; exit 1; }
+          mkdir -p toolchains/llvm-project/llvm
+          ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
+          echo "LLVM headers ready"
+
+      - name: Preconditions for the Wine PE stages
+        if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # Both PE stages need the unix side built first and a configured
+          # wine/build-arm64ec tree; building ntdll is what creates it.
+          bash build/ntdll-unix/build.sh
+          test -f wine/build-arm64ec/config.status \
+            || { echo "::error::wine/build-arm64ec is not configured after build-ntdll.sh"; exit 1; }
+
+      - name: Run the stage
+        if: ${{ inputs.stage != 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          case "${{ inputs.stage }}" in
+            llvm-headers) echo "headers only; nothing to build" ;;
+            wine-pe) bash build/wine-pe/build-ntdll.sh ;;
+            wine-pe-universal) bash build/wine-pe/build-universal.sh ;;
+            *) bash "build/${{ inputs.stage }}/build.sh" ;;
+          esac
+
+      - name: Try to link the app
+        if: ${{ inputs.stage == 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/fex-ios/build.sh
+          bash build/ntdll-unix/build.sh
+          bash build/wineserver/build.sh
+          bash build/win32u-unix/build.sh
+          bash build/dxmt-ios/build.sh
+          bash build/rppairing-ios/build.sh
+          xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
+            -configuration Debug -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+      - name: Show what the stage produced
+        if: always()
+        run: |
+          echo "=== toolchains ==="; ls -la toolchains 2>/dev/null | head -20
+          echo "=== iOS static libs the app links ==="
+          for f in app/Madeira/libntdll_unix.a app/Madeira/libwineserver.a \
+                   app/Madeira/libwin32u_unix.a app/Madeira/libdxmt_combined.a \
+                   app/Madeira/libmadeira_rppairing.a app/Madeira/libgnutls.a \
+                   app/Madeira/libavformat.a FEX/build-ios/FEXCore/Source/libFEXCore.a; do
+            [ -f "$f" ] && echo "  ok      $f ($(du -h "$f" | cut -f1))" || echo "  absent  $f"
+          done
+          echo "=== arm64ec farm general-purpose check ==="
+          for f in gdiplus.dll msi.dll explorer.exe cmd.exe msiexec.exe services.exe; do
+            [ -f "app/Madeira/arm64ec-windows/$f" ] && echo "  ok      $f" || echo "  MISSING $f"
+          done

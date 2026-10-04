@@ -254,7 +254,12 @@ struct LinuxEnvironmentManagerView: View {
             }
         }
         .navigationTitle("Madeira Linux")
-        .alert("Not built yet", isPresented: .constant(banner != nil)) {
+        // A real two-way binding. `.constant(banner != nil)` looks the same but
+        // its setter does nothing, so the alert could never be dismissed.
+        .alert("Not built yet", isPresented: Binding(
+            get: { banner != nil },
+            set: { if !$0 { banner = nil } }
+        )) {
             Button("OK", role: .cancel) { banner = nil }
         } message: {
             Text(banner ?? "")
