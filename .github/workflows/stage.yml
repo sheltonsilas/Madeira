@@ -138,8 +138,7 @@ jobs:
       - name: Preconditions for the Wine PE stages
         if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
         run: |
-          # Both PE stages need the unix side built first and a configured
-          # wine/build-arm64ec tree; building ntdll is what creates it.
+          # The PE stages need the unix side built first.
           #
           # ntdll-unix compiles dwrite_freetype_ios.c against freetype's
           # headers and the crypto unixlibs against gnutls's, so this step
@@ -147,12 +146,18 @@ jobs:
           # them earlier in its chain; a single-stage run has to bring them
           # up here, or dwrite fails on a missing ft2build.h and the error
           # points at Wine's source rather than at a missing prerequisite.
+          #
+          # There is deliberately no assertion that wine/build-arm64ec is
+          # configured here. One used to sit at the end of this step on the
+          # belief that building ntdll configures that tree. It does not:
+          # build/ntdll-unix builds the unix side against wine/build-macos,
+          # and wine/build-arm64ec is configured by build/wine-pe/
+          # build-ntdll.sh, which is the stage this step precedes. The
+          # assertion could therefore only ever fail, and it did.
           bash build/gnutls-ios/build.sh
           bash build/ffmpeg/build.sh
           bash build/freetype-ios/build.sh
           bash build/ntdll-unix/build.sh
-          test -f wine/build-arm64ec/config.status \
-            || { echo "::error::wine/build-arm64ec is not configured after build-ntdll.sh"; exit 1; }
 
       - name: Run the stage
         if: ${{ inputs.stage != 'xcodebuild' }}
