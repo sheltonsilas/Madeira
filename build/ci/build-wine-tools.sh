@@ -34,15 +34,24 @@ done
 
 # The tools are what everything else in this tree depends on, so report exactly
 # which are missing rather than letting the next step fail on a link error.
+#
+# makedep is the binary tools/makedep in a BUILD tree: tools/makedep/ is a
+# directory in the source tree, and configure's generated Makefile links the
+# program straight into tools/. Checking the directory-shaped path reports it
+# missing when it was just built.
 missing=0
-for f in tools/makedep/makedep tools/widl/widl tools/winebuild/winebuild tools/wrc/wrc; do
-    if [ -x "$B/$f" ]; then
-        echo "    ok $f"
+check() {   # check <label> <path>
+    if [ -x "$2" ]; then
+        echo "    ok $1"
     else
-        echo "    MISSING $f"
+        echo "    MISSING $1"
         missing=$((missing + 1))
     fi
-done
+}
+check tools/makedep "$B/tools/makedep"
+check tools/widl/widl "$B/tools/widl/widl"
+check tools/winebuild/winebuild "$B/tools/winebuild/winebuild"
+check tools/wrc/wrc "$B/tools/wrc/wrc"
 if [ "$missing" -gt 0 ]; then
     echo "::error::$missing Wine host tool(s) did not build in $B"
     exit 1

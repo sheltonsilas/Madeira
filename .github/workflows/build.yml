@@ -300,6 +300,7 @@ jobs:
         with:
           path: |
             FEX/build-ios
+            wine/build-macos
             wine/build-arm64ec
           key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') }}
           restore-keys: native-${{ matrix.variant }}-
