@@ -73,6 +73,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # For dxmt-ios the llvm-mingw step that normally creates this
+          # directory is skipped, and a cache miss means actions/cache creates
+          # nothing either, so curl fails with "No such file or directory".
+          mkdir -p toolchains
           VERSION=15.0.7
           url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
