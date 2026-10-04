@@ -1,0 +1,66 @@
+# LICENSES / NOTICE
+
+This file records the licence position for the two-variant fork of Madeira, and
+in particular for the JIT work, where the brief asked for StikDebug's code to be
+embedded and that has a real legal consequence.
+
+## The short version
+
+**The brief's preferred approach is also the licence-clean one.** StikDebug the
+*app* is AGPL-3.0. Embedding AGPL source would oblige this whole fork to be
+AGPL. StikJIT, the embeddable XCFramework, is **MPL-2.0**. Upstream Madeira
+already ships StikJIT and a JIT-helper app extension, so **no AGPL StikDebug
+code has been added**, and the fork stays GPL-3.0-or-later plus the Madeira
+Converter Exception.
+
+## What is already in the tree (upstream, not added by this patch)
+
+| Component | Where | Licence | Notes |
+|---|---|---|---|
+| Madeira app | `app/` | GPL-3.0-or-later + Madeira Converter Exception | `LICENSE`, `LICENSE-EXCEPTION.md` |
+| Wine fork | `wine/` (submodule) | LGPL-2.1-or-later | Upstream Wine's licence |
+| FEX-Emu fork | `FEX/` (submodule) | Upstream MIT; Madeira's changes GPL-3.0-or-later + exception | |
+| DXMT fork | `dxmt/` (submodule) | Upstream MIT; Madeira's changes GPL-3.0-or-later + exception | |
+| rpmalloc fork | nested in `FEX/` | Upstream 0BSD; Madeira's changes GPL-3.0-or-later + exception | |
+| Madeira Dock | `madeira-dock/` (submodule) | GPL-3.0-or-later + exception | |
+| **StikJIT.xcframework** | `app/Frameworks/` | **MPL-2.0** | StikJIT 1.9.0. MPL-2.0 is file-level copyleft: using it does not force this project under MPL, and it does not force AGPL. |
+| idevice (pairing) | via `build/rppairing-ios` | as upstream | Wrapper around jkcoxson/idevice |
+| GnuTLS / Nettle / GMP | `build/gnutls-ios/` | LGPL-3.0 / LGPL-3.0-or-later / LGPL-3.0-or-later | Relink obligation documented in `docs/LICENSING.md` |
+| FFmpeg | `build/ffmpeg/` | LGPL-only configuration (no GPL components enabled) | |
+| LLVM | `toolchains/` | Apache-2.0-with-LLVM-exception | |
+
+## What this patch adds
+
+| File | Licence | Why |
+|---|---|---|
+| `app/Madeira/Variant/AppVariant.swift` | GPL-3.0-or-later + Converter Exception | Original work, same terms as the host project |
+| `app/Madeira/Variant/JitManager.swift` | GPL-3.0-or-later + Converter Exception | Original work. Wraps **already-bundled** MPL-2.0 StikJIT; contains no StikDebug AGPL source |
+| `app/Madeira/Variant/MadeiraBrowserView.swift` | GPL-3.0-or-later + Converter Exception | Original work. Uses the system WebKit; **bundles no browser binary** |
+| `app/Madeira/Variant/WindowsInstallerBridge.swift` | GPL-3.0-or-later + Converter Exception | Original work |
+| `app/Madeira/Variant/PointerMode.swift` | GPL-3.0-or-later + Converter Exception | Original work |
+| `app/Madeira/Variant/LinuxEnvironmentStore.swift` | GPL-3.0-or-later + Converter Exception | Original work. No UTM code copied; the design is informed by reading UTM's public documentation and source |
+| `tools/add_variant_files.py`, `tools/check_pbxproj.py` | GPL-3.0-or-later + Converter Exception | Original work |
+| `.github/workflows/build.yml` | GPL-3.0-or-later + Converter Exception | Original work |
+
+## Things deliberately NOT redistributed
+
+| Item | Why not | What to do instead |
+|---|---|---|
+| **Microsoft Visual C++ runtime DLLs** (`msvcp140*`, `vcruntime140*`, …) | Not redistributable under Madeira's licence; Microsoft has its own terms. Upstream calls this out too. | Extract from `vc_redist.x64.exe` into `app/Madeira/x86_64-vcruntime/`, or supply `VCREDIST_B64` to CI. See `docs/BUILDING.md`. |
+| **Apple Metal Shader Converter** | Licence-bound Apple developer download. | Not needed for a normal build: the library is already tracked in the repo. Only a converter *rebuild* needs it. |
+| **Any Windows browser binary** | The brief's Variant A wanted a preinstalled Windows browser. This patch ships a native WebKit browser instead (rationale in the file header). Shipping a real Windows browser PE would be a redistribution question for that browser's own licence. | `WindowsBrowser.packageSlot` is an empty extension point. If filled, Firefox (MPL-2.0) is the obvious redistribution-safe choice. |
+| **Ubuntu rootfs** | Not built or bundled here. | Ubuntu images are freely redistributable (their licences permit it), but none is included in this patch. |
+| **AGPL StikDebug source** | Would force this fork to AGPL. | Not needed. StikJIT (MPL-2.0) provides the same capability and upstream already embeds it. |
+
+## Compatibility conclusion
+
+GPL-3.0-or-later + Madeira Converter Exception + MPL-2.0 (StikJIT) +
+MIT/0BSD/LGPL/Apache-2.0 (everything else) is a compatible combination. The
+Madeira Converter Exception exists precisely so the project can work with
+Apple's Metal Shader Converter while staying GPL; nothing in this patch disturbs
+that arrangement.
+
+Had StikDebug's AGPL code been embedded, the fork would have had to become
+AGPL-3.0. That was avoidable, so it was avoided. If a future change does need
+StikDebug itself rather than StikJIT, this file must be revisited and the whole
+fork relicensed to AGPL-3.0.
