@@ -11,6 +11,21 @@ APP_LIB="$REPO_ROOT/app/Madeira/libntdll_unix.a"
 
 mkdir -p "$OBJ_DIR"
 
+# Probe the SDK for struct rusage_info_v6::ri_page_wait_time_mach, which the
+# iOS 26 SDK no longer declares. server_ios.c reports it through the [xp]
+# performance line and nothing else, so the probe decides between the real field
+# and a zero rather than the build failing on one SDK or another.
+SDK_EXTRA_FLAGS=""
+probe="$(mktemp /tmp/madeira-rusage-XXXXXX.c)"
+printf '#include <sys/resource.h>\nint main(void){struct rusage_info_v6 r; (void)r.ri_page_wait_time_mach; return 0;}\n' > "$probe"
+if xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK" -c "$probe" -o /dev/null >/dev/null 2>&1; then
+    SDK_EXTRA_FLAGS="-DRI_HAS_PAGE_WAIT_TIME_MACH=1"
+    echo "rusage_info_v6: ri_page_wait_time_mach is present"
+else
+    echo "rusage_info_v6: ri_page_wait_time_mach is not in this SDK; [xp] will report 0 for it"
+fi
+rm -f "$probe"
+
 SUCCEEDED=0
 FAILED=0
 FAILED_FILES=""
@@ -26,6 +41,7 @@ compile_one() {
         -Wno-implicit-function-declaration -Wno-int-conversion \
         -include "$WINE_BUILD/include/config.h" \
         -include "$BUILD_DIR/shims/wine_ios_exit.h" \
+        $SDK_EXTRA_FLAGS \
         -I"$BUILD_DIR/shims" -I"$BUILD_DIR/../madsync" -DHAVE_LINUX_NTSYNC_H=1 \
         -I"$WINE_BUILD/dlls/ntdll" -I"$WINE_SRC/dlls/ntdll" -I"$WINE_SRC/dlls/ntdll/unix" \
         -I"$WINE_BUILD/include" -I"$WINE_SRC/include" \
