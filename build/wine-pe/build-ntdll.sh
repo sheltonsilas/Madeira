@@ -11,20 +11,13 @@
 # `make -C dlls/winegstreamer`, which would also try the GStreamer-based .so.
 set -eu
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# macOS's bison 2.3 fails Wine's configure, and this tree's configure needs it
-# too, exactly as wine/build-macos does. See build/ci/ensure-bison.sh.
-bash "$R/build/ci/ensure-bison.sh"
-export PATH="$R/toolchains/bison-3.8.2/bin:$PATH"   # if it had to build one
 TC="$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
 export PATH="$TC:$PATH"
 B="$R/wine/build-arm64ec"
-if [ ! -f "$B/config.status" ]; then
-    mkdir -p "$B" && cd "$B" && ../configure --enable-archs=arm64ec --without-x --disable-tests --enable-winegstreamer
-fi
-# This tree needs its own host tools: every generated Makefile and every PE link
-# uses winebuild and widl, and nothing builds them implicitly. See
-# build/ci/build-wine-tools.sh for why `make tools` is not enough.
-bash "$R/build/ci/build-wine-tools.sh" "$B"
+# The configure flags live in one place now. stage.yml used to carry its own
+# copy of this configure line and it had drifted, so a stage run configured a
+# different tree than a full build.yml run did.
+bash "$R/build/wine-pe/configure-arm64ec.sh" "$R"
 cd "$B" && make -C dlls/ntdll
 SRC="$B/dlls/ntdll/arm64ec-windows/ntdll.dll"; OUT="$R/app/Madeira/arm64ec-windows/ntdll.dll"
 cp "$SRC" "$OUT.tmp"
