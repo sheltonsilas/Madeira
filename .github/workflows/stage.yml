@@ -121,6 +121,20 @@ jobs:
           # the missing header.
           bash build/wine-macos/build.sh
 
+      - name: Preconditions for the Wine unix-side libraries
+        if: ${{ inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' }}
+        run: |
+          # Three of these objects compile against headers another build produces:
+          #   winegstreamer_unixlib_ios.c needs libavcodec/avcodec.h (build/ffmpeg)
+          #   dwrite_freetype_ios.c needs ft2build.h           (build/freetype-ios)
+          #   bcrypt/secur32/crypt32 unixlibs need gnuctls.h    (build/gnutls-ios)
+          # build.yml runs all three earlier in its chain, so only a single-stage
+          # run has to bring them up. Without this the stage reports two objects
+          # missing with "file not found", which reads like a source fault.
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/freetype-ios/build.sh
+
       - name: Preconditions for the Wine PE stages
         if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
         run: |
