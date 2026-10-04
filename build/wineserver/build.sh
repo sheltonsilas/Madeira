@@ -12,16 +12,6 @@ SHIMS_DIR="$REPO_ROOT/build/ntdll-unix/shims"
 OBJ_DIR="$BUILD_DIR/obj"
 mkdir -p "$OBJ_DIR"
 
-# Copy the base library if we don't have one yet
-if [ ! -f "$OBJ_DIR/libwineserver.a" ]; then
-    if [ -f "$APP_LIB" ]; then
-        cp "$APP_LIB" "$OBJ_DIR/libwineserver.a"
-    else
-        echo "ERROR: No base libwineserver.a found"
-        exit 1
-    fi
-fi
-
 CC_FLAGS=(
     -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 -O2
     -I"$WINE_SRC/include" -I"$WINE_SRC/include/wine"
@@ -112,6 +102,79 @@ PATCHED_FILES=(
     "hidpad_ios:hidpad_ios.c:hidpad_ios.o"
     "hidparse_ios:$REPO_ROOT/build/hidpad/hidparse_ios.c:hidparse_ios.o"
 )
+
+# The base archive: every wineserver object that is NOT replaced below.
+#
+# This script was written to patch objects into an archive that already existed.
+# That archive is gitignored (app/Madeira/libwineserver.a in .gitignore) and was
+# produced by hand on the original development machine, so no clean checkout --
+# and therefore no CI run -- has ever had one. The step before printed
+# "ERROR: No base libwineserver.a found" and exited, which is why this stage had
+# never passed.
+#
+# So build it here from the submodule's own server/*.c, using the same flags as
+# the patched compiles. The REPLACEMENTS table below then deletes each original
+# object and inserts the patched one, exactly as it always did. A file whose
+# original is replaced is skipped, or its object would be built twice and the
+# second build would silently win.
+#
+# Objects named <x>_ios (request_ios, main_ios, ...) come from this directory and
+# are added by the replacement loop, not from server/*.c.
+BASE_SKIP="wine_log_ios request main mach unicode fd object event semaphore handle async process window user mapping class region queue winstation thread inproc_sync sock"
+
+# base_archive -- compile the unpatched remainder of wineserver.
+base_archive() {
+    local built=0 skipped=0
+    local failed=""
+    local base_obj_dir="$OBJ_DIR/base"
+    rm -rf "$base_obj_dir"
+    mkdir -p "$base_obj_dir"
+
+    for src in "$WINE_SRC/server"/*.c; do
+        local name
+        name="$(basename "$src" .c)"
+        local skip=0
+        for s in $BASE_SKIP; do
+            [ "$name" = "$s" ] && skip=1 && break
+        done
+        if [ "$skip" = 1 ]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if xcrun -sdk iphoneos clang "${CC_FLAGS[@]}" -c "$src" \
+             -o "$base_obj_dir/$name.o" 2>"$base_obj_dir/$name.err"; then
+            built=$((built + 1))
+        else
+            # Several server/*.c are Linux/FreeBSD-only (d3dkmt, procfs, ptrace,
+            # serial). Report them rather than failing the whole stage: the
+            # authoritative check is the xcodebuild link, which reports any
+            # genuinely missing symbol by name.
+            failed="$failed $name"
+            echo "    skipped (does not build for iOS): $name"
+            sed -n '1,6p' "$base_obj_dir/$name.err" | sed 's/^/        /'
+        fi
+    done
+
+    echo "  base objects: $built built, $skipped replaced later"
+    if [ "$built" -eq 0 ]; then
+        echo "::error::no base wineserver objects built; the archive would be empty"
+        exit 1
+    fi
+    rm -f "$OBJ_DIR/libwineserver.a"
+    ar rcs "$OBJ_DIR/libwineserver.a" "$base_obj_dir"/*.o
+    echo "  base libwineserver.a: $(wc -c < "$OBJ_DIR/libwineserver.a" | tr -d ' ') bytes"
+    if [ -n "$failed" ]; then
+        echo "::warning::base wineserver objects that did not build for iOS:$failed"
+    fi
+}
+
+if [ ! -f "$OBJ_DIR/libwineserver.a" ]; then
+    echo "=== Building the base wineserver archive ==="
+    base_archive
+elif [ -f "$APP_LIB" ] && [ "$APP_LIB" -nt "$OBJ_DIR/libwineserver.a" ]; then
+    # A previous run already produced one; keep it so incremental runs work.
+    cp "$APP_LIB" "$OBJ_DIR/libwineserver.a"
+fi
 
 echo "=== Building kill wrapper (without kill macro) ==="
 echo -n "  wineserver_ios_kill... "
