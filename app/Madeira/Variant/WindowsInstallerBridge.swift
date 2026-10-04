@@ -199,7 +199,9 @@ final class InstalledAppsStore: ObservableObject {
                                              includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             for case let url as URL in walker {
-                guard Self.pathExtension(of: url.lastPathComponent) == "exe" else { continue }
+                // Not Self.pathExtension: Self here is InstalledAppsStore, which
+                // has no such member. The helper lives on WindowsInstallerBridge.
+                guard WindowsInstallerBridge.pathExtension(of: url.lastPathComponent) == "exe" else { continue }
                 let relative = url.path.replacingOccurrences(of: LibraryModel.drive.path + "/", with: "")
                 guard !seen.insert(relative).inserted else { continue }
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0

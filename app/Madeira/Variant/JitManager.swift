@@ -34,6 +34,7 @@
 // into it rather than live alongside it.
 
 import Foundation
+import Combine
 import os.log
 import Security
 import UIKit
@@ -98,7 +99,23 @@ final class JitManager: ObservableObject {
     /// When the user has explicitly chosen the interpreter-only fallback.
     /// UTM SE does the same thing: it drops the JIT and runs an interpreter,
     /// which works everywhere but is much slower.
-    @AppStorage("madeira.forceInterpreter") private(set) var forceInterpreter = false
+    ///
+    /// Backed by UserDefaults rather than declared with @AppStorage, for two
+    /// reasons that both bite at compile or run time:
+    ///   * @AppStorage here was declared `private(set)`, so `$jit.forceInterpreter`
+    ///     resolved to a read-only key path and the Toggle in JitOnboardingView
+    ///     could not bind to it at all.
+    ///   * @AppStorage does not publish, so the notice below the Toggle would not
+    ///     have redrawn when it changed. @Published does.
+    @Published var forceInterpreter: Bool {
+        didSet { UserDefaults.standard.set(forceInterpreter, forKey: Self.interpreterKey) }
+    }
+
+    private static let interpreterKey = "madeira.forceInterpreter"
+
+    init() {
+        forceInterpreter = UserDefaults.standard.bool(forKey: Self.interpreterKey)
+    }
 
     private let log = Logger(subsystem: "com.madeira.emulator", category: "jit")
     private var pollTask: Task<Void, Never>?

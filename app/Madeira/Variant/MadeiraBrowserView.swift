@@ -144,6 +144,13 @@ struct MadeiraBrowserView: View {
             BrowserWebView(downloads: store.downloads) { download in
                 store.add(download)
                 showShelf = true
+                // Offer an installer the moment it lands. Download -> install is
+                // the whole point of this screen, and making the user hunt for
+                // the shelf first is friction for no benefit. This was wired but
+                // never set, so the prompt could not fire.
+                if download.isInstaller && download.finished {
+                    pendingInstall = download.id
+                }
             }
             .navigationTitle("Browser")
             .navigationBarTitleDisplayMode(.inline)
