@@ -1,7 +1,7 @@
 [submodule "FEX"]
 	path = FEX
-	url = https://github.com/willfaust/FEX.git
-	branch = ios-port-2607
+	url = https://github.com/sheltonsilas/FEX.git
+	branch = fix/arm64cpp-host-win32
 [submodule "wine"]
 	path = wine
 	url = https://github.com/willfaust/wine.git
