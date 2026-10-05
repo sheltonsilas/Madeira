@@ -60,9 +60,21 @@ jobs:
       - name: Cache the toolchain inputs
         uses: actions/cache@v4
         with:
-          path: toolchains
+          # The path list is part of a cache's identity (actions/cache hashes it
+          # into the cache version), so this must stay identical to heavy.yml's
+          # or the llvm-ios-* cache is invisible however the keys are written:
+          # build.yml listed `toolchains` and its log said "Cache not found for
+          # input keys: ..., llvm-ios-" on every run, which is why nothing but a
+          # fallback headers-only download ever appeared. llvm-ios- is in the
+          # restore keys here for the same reason it is there.
+          path: |
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-bin
+            toolchains/llvm-project
           key: toolchain-stage-${{ inputs.stage }}
-          restore-keys: toolchain-stage-
+          restore-keys: |
+            toolchain-stage-
+            llvm-ios-
 
       - name: Fetch llvm-mingw
         if: ${{ inputs.stage == 'wine-macos' || inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' || inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
@@ -172,6 +184,24 @@ jobs:
           # configure line and it had drifted from build-ntdll.sh's, so a
           # stage run built a different tree than a full build.yml run.
           bash build/wine-pe/configure-arm64ec.sh "$PWD"
+
+      - name: What the stage needs from the toolchains directory
+        if: ${{ inputs.stage == 'dxmt-ios' || inputs.stage == 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          # dxmt-ios/combine.sh merges libdxmt_unix.a with LLVM's iOS archives,
+          # and the app links the merge, so compiling alone is not enough. This
+          # ran after the headers-only fallback for a long time and the failure
+          # surfaced 30 minutes later inside combine.sh, where it read like a
+          # DXMT fault. Say it here instead, in front of the stage that needs it.
+          lib=toolchains/llvm-ios-build/lib
+          n=$(ls "$lib"/libLLVM*.a 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$n" -gt 0 ]; then
+            echo "$n LLVM-for-iOS archives in $lib"
+          else
+            echo "::error::$lib has no libLLVM*.a - run the llvm-ios workflow (about an hour) and re-run this stage"
+            exit 1
+          fi
 
       - name: Run the stage
         if: ${{ inputs.stage != 'xcodebuild' }}

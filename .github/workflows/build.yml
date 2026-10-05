@@ -166,7 +166,24 @@ jobs:
       - name: Cache the toolchain inputs
         uses: actions/cache@v4
         with:
-          path: toolchains
+          # The path list is part of a cache's identity: actions/cache hashes the
+          # paths into the cache version and will not match a cache whose paths
+          # differ, however well the key prefix fits. This step listed
+          # `toolchains`, the llvm-ios workflow lists the three directories
+          # below, so the llvm-ios-* cache -- the hour-long LLVM-for-iOS build
+          # that dxmt-ios/combine.sh needs -- never restored. The log from run
+          # 37250901109 says exactly that:
+          #   "Cache not found for input keys: toolchain-linux-<hash>,
+          #    toolchain-linux-, llvm-ios-"
+          # and the run then fell through to the headers-only fallback and died
+          # in combine.sh with "missing toolchains/llvm-ios-build/lib". The three
+          # paths are therefore byte-identical to heavy.yml's, on purpose; do
+          # not add llvm-mingw here (it is a 200 MB download, but a cheap one:
+          # the step below fetches it in about 15 seconds).
+          path: |
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-bin
+            toolchains/llvm-project
           key: toolchain-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
           restore-keys: |
             toolchain-${{ matrix.variant }}-
@@ -304,6 +321,25 @@ jobs:
             wine/build-arm64ec
           key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') }}
           restore-keys: native-${{ matrix.variant }}-
+
+      - name: The LLVM-for-iOS archives the shader compiler links against
+        # Checked here rather than 25 minutes into the chain: dxmt-ios/combine.sh
+        # merges libdxmt_unix.a with toolchains/llvm-ios-build/lib/libLLVM*.a,
+        # and airconv calls into LLVM, so without these archives the app cannot
+        # be linked at all. The step above restores them from the cache the
+        # llvm-ios workflow wrote; if that cache was evicted, run that workflow
+        # again (Actions -> llvm-ios -> Run workflow) instead of hunting a
+        # compile error that is really a missing input.
+        run: |
+          set -euo pipefail
+          lib=toolchains/llvm-ios-build/lib
+          n=$(ls "$lib"/libLLVM*.a 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$n" -gt 0 ]; then
+            echo "$n LLVM-for-iOS archives in $lib"
+          else
+            echo "::error::$lib has no libLLVM*.a - run the llvm-ios workflow (about an hour) and re-run this one"
+            exit 1
+          fi
 
       - name: Build the native pieces
         # Only the iOS static libraries are built here. The Windows PE modules
