@@ -78,12 +78,19 @@ api() {   # api <url> [extra curl args...]
 
 jget() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null || echo ""; }
 
-# --- the commit has to be on the branch the workflows check out --------------
-SHA="$(git -C "$R" rev-parse HEAD)"
-REMOTE_SHA="$(api "$API/branches/$BRANCH" | jget "d['commit']['sha']")"
-[ -n "$REMOTE_SHA" ] || die "could not read the branch head (network?)"
-if [ "$SHA" != "$REMOTE_SHA" ]; then
-    die "HEAD ($SHA) is not the tip of $BRANCH ($REMOTE_SHA); push first, the workflows build the branch"
+# --- the commit being driven is the branch tip, not whatever is checked out --
+#
+# The workflows check out the branch, so the commit a run builds is the tip of
+# it. Driving local HEAD instead meant a run could be dispatched (and its log
+# read) as though it contained commits that were never pushed -- which is how a
+# fix appears to have no effect. Local HEAD not being the tip is therefore an
+# error: push (or stash) before driving. Uncommitted changes to this directory
+# are harmless, since this script is read from disk and never runs on a runner.
+LOCAL_SHA="$(git -C "$R" rev-parse HEAD)"
+SHA="$(api "$API/branches/$BRANCH" | jget "d['commit']['sha']")"
+[ -n "$SHA" ] || die "could not read the branch head (network?)"
+if [ "$LOCAL_SHA" != "$SHA" ]; then
+    die "HEAD ($LOCAL_SHA) is not the tip of $BRANCH ($SHA); the workflows build the branch tip, so push first"
 fi
 log "driving ${TARGETS[*]} at ${SHA:0:7}"
 
@@ -112,6 +119,41 @@ for r in json.load(sys.stdin).get('workflow_runs',[]):
         print(r['id'], r['status'], r['conclusion'] or '-', r['run_number'])
         break
 " "$2" 2>/dev/null || echo ""
+}
+
+# newest_any_run <workflow file> -> "<id> <status> <conclusion> <run_number> <sha>"
+#
+# Used to find runs nobody dispatched through this driver. build.yml triggers on
+# every push, and its concurrency group cancels the previous push's run, so the
+# newest run of that workflow is not necessarily the newest one *this script*
+# started. A driver that matched on the local commit alone adopted a run that had
+# already been cancelled and reported the build as failed without waiting for
+# anything.
+newest_any_run() {
+    api "$API/actions/workflows/$1/runs?branch=$BRANCH&per_page=10" | python3 -c "
+import json,sys
+rs=json.load(sys.stdin).get('workflow_runs',[])
+if rs:
+    r=rs[0]
+    print(r['id'], r['status'], r['conclusion'] or '-', r['run_number'], r['head_sha'])
+" 2>/dev/null || echo ""
+}
+
+run_meta() {   # run_meta <run_id> -> "<status> <conclusion> <run_number> <head_sha>"
+    api "$API/actions/runs/$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('status',''), d.get('conclusion') or '-', d.get('run_number',''), d.get('head_sha',''))
+" 2>/dev/null || echo ""
+}
+
+in_flight_any_run() {   # newest run of a workflow that has not completed yet
+    local id
+    read -r id _ _ _ _ <<< "$(newest_any_run "$1")"
+    [ -n "${id:-}" ] || return 0
+    local status
+    status=$(api "$API/actions/runs/$id" | jget "d.get('status','')")
+    [ "$status" != "completed" ] && echo "$id"
 }
 
 wait_for_run() {   # wait_for_run <run_id> -> prints the conclusion on stdout
@@ -235,14 +277,46 @@ run_stage() {   # run_stage <stage> -> 0 green, 1 failed
 }
 
 run_build() {   # run_build -> 0 when the release with the IPAs exists
-    local run status conclusion number tag sizes
-    dispatch build.yml '{"heavy_toolchain":false}' || return 1
-    sleep 45
-    for i in 1 2 3 4 5 6; do
-        read -r run status _ number <<< "$(newest_run build.yml "$SHA")"
-        [ -n "${run:-}" ] && break
-        sleep 15
-    done
+    local run status conclusion number tag candidate_sha
+
+    # Adopt a run that is already in flight before dispatching anything. Two
+    # reasons: this workflow triggers on every push, so a run may already be
+    # building this commit; and dispatching another one would *cancel* it, since
+    # build.yml's concurrency group is per-ref with cancel-in-progress. That is
+    # how a driver restart threw away a healthy run.
+    run="$(in_flight_any_run build.yml)"
+    if [ -n "$run" ]; then
+        read -r status conclusion number _ <<< "$(run_meta "$run")"
+        candidate_sha=$(api "$API/actions/runs/$run" | jget "d.get('head_sha','')")
+        if [ "$candidate_sha" != "$SHA" ]; then
+            # An older commit's run. build.yml's concurrency group will cancel it
+            # the moment a run for this tip is dispatched, and waiting for a build
+            # of code we are not driving would be busywork.
+            log "a build run for ${candidate_sha:0:7} is in flight; ignoring it (this driver is at ${SHA:0:7})"
+            run=""
+        else
+            log "a build run is already in flight: $run (adopting it)"
+        fi
+    fi
+    if [ -z "${run:-}" ]; then
+        # A run that already succeeded for this commit is the answer, not work
+        # to repeat -- that is what makes a driver restart cheap.
+        read -r run status conclusion number <<< "$(newest_run build.yml "$SHA")"
+        if [ "${conclusion:-}" = "success" ]; then
+            log "build is already green at ${SHA:0:7} (run $run)"
+            report_release "$number" || return 1
+            echo "build $SHA" >> "$STATE"
+            return 0
+        fi
+        run=""
+        dispatch build.yml '{"heavy_toolchain":false}' || return 1
+        sleep 45
+        for i in 1 2 3 4 5 6; do
+            read -r run status _ number <<< "$(newest_run build.yml "$SHA")"
+            [ -n "${run:-}" ] && break
+            sleep 15
+        done
+    fi
     [ -n "${run:-}" ] || { log "FATAL: could not find the dispatched build run"; return 1; }
     echo "build $run $SHA" > "$INFLIGHT"
     log "build run $run ($(run_url "$run")) -- both variants, then the release"
@@ -250,34 +324,61 @@ run_build() {   # run_build -> 0 when the release with the IPAs exists
     log "build run $run concluded: $conclusion"
     rm -f "$INFLIGHT"
     save_job_logs "$run" "build"
+
+    if [ "$conclusion" = "cancelled" ]; then
+        # Almost always a push of a newer commit: concurrency cancels the older
+        # run. Say so, and let the caller decide whether to drive the new tip.
+        log "run $run was superseded (cancelled). Re-run this driver for the new tip"
+        return 1
+    fi
     if [ "$conclusion" != "success" ]; then
         log "the build failed; the failing job's log is above"
         needs_fix "build" "$run"
         return 1
     fi
 
-    tag="build-$number"
-    log "release $tag; collecting the assets"
-    api "$API/releases/tags/$tag" | python3 - "$DIR" "$REPO" "$tag" <<'PY' 2>&1 | while read -r l; do log "$l"; done
-import json, os, sys
-d = sys.argv[1]; repo = sys.argv[2]; tag = sys.argv[3]
-rel = json.load(sys.stdin)
-assets = rel.get("assets", [])
-lines = ["# IPAs are built", "",
-         "Release: https://github.com/%s/releases/tag/%s" % (repo, tag), "",
-         "| file | size | download |", "| --- | --- | --- |"]
-ipas = [a for a in assets if a["name"].endswith(".ipa")]
-for a in assets:
-    lines.append("| %s | %.1f MB | %s |" % (a["name"], a["size"]/1e6, a["browser_download_url"]))
-os.makedirs(os.path.join(d, "ipas"), exist_ok=True)
-open(os.path.join(d, "IPA-READY.md"), "w").write("\n".join(lines) + "\n")
-print("release %s has %d assets, %d of them IPAs" % (tag, len(assets), len(ipas)))
-for a in ipas:
-    print("  %s  %.1f MB  %s" % (a["name"], a["size"]/1e6, a["browser_download_url"]))
-PY
+    report_release "$number" || return 1
     echo "build $SHA" >> "$STATE"
     log "SUCCESS: IPAs published. See $DIR/IPA-READY.md"
     return 0
+}
+
+report_release() {   # report_release <run_number> -> 0 when the IPAs are on a published release
+    local number="$1" tag n
+    tag="build-$number"
+    log "release $tag; collecting the assets"
+    api "$API/releases/tags/$tag" -o "$DIR/release-$tag.json"
+    n=$(python3 - "$DIR" "$REPO" "$tag" "$DIR/release-$tag.json" <<'PY' 2>/dev/null
+import json, os, sys
+d, repo, tag, path = sys.argv[1:5]
+try:
+    rel = json.load(open(path))
+except Exception:
+    print(0); raise SystemExit
+assets = rel.get("assets", [])
+ipas = [a for a in assets if a["name"].endswith(".ipa")]
+lines = ["# IPAs are built", "",
+         "Release: https://github.com/%s/releases/tag/%s" % (repo, tag), "",
+         "| file | size | download |", "| --- | --- | --- |"]
+for a in assets:
+    lines.append("| %s | %.1f MB | %s |" % (a["name"], a["size"] / 1e6, a["browser_download_url"]))
+os.makedirs(os.path.join(d, "ipas"), exist_ok=True)
+open(os.path.join(d, "IPA-READY.md"), "w").write("\n".join(lines) + "\n")
+open(os.path.join(d, "ipas.txt"), "w").write("\n".join(
+    "%s  %.1f MB  %s" % (a["name"], a["size"] / 1e6, a["browser_download_url"]) for a in ipas) + "\n")
+print(len(ipas))
+PY
+)
+    [ -n "${n:-}" ] || n=0
+    if [ "$n" -gt 0 ]; then
+        while read -r l; do [ -n "$l" ] && log "  $l"; done < "$DIR/ipas.txt"
+        log "SUCCESS: $n IPA(s) published; see $DIR/IPA-READY.md"
+        return 0
+    fi
+    # The release exists but carries no IPA, which means the publish job did not
+    # get both artifacts; that is a real failure and this target is not done.
+    log "the release has no IPA assets; the publish job must have failed"
+    return 1
 }
 
 # --- go ------------------------------------------------------------------------
