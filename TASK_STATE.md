@@ -536,6 +536,44 @@ rewritten every poll, and a failure writes `NEEDS_FIX.md` with the run URL and
 the first real error. The `build` target dispatches the full `build.yml` run and
 finishes by writing `IPA-READY.md` with the release and the two IPA downloads.
 
+### 9g. SESSION 6 — THE APP TARGET BUILDS FOR THE FIRST TIME, AND WHAT IT FOUND
+
+With the combine path and the cache identity fixed, the chain ran end to end for
+the first time (`build.yml` run 37310723333, `c41df05`): gnutls, ffmpeg,
+freetype, FEX, the Wine macOS tree, the unix side, libwineserver, win32u,
+`ntdll.dll`, the arm64ec PE farm, DXMT's 87 objects **including the merge into
+`libdxmt_combined.a`**, `rppairing-ios` (cargo, iOS target), and then the app
+target itself. It failed there, in the **JIT helper extension**, on this:
+
+```
+app/Frameworks/StikJIT.xcframework/.../arm64-apple-ios.private.swiftinterface:12:31:
+  error: expected '{' in struct
+public struct DDIPaths : Swift::Sendable {
+                              ^
+```
+
+The framework ships **no binary `.swiftmodule`** -- only two `.swiftinterface`
+files -- so those files are the only description of the module the app imports.
+They were printed by **Swift 6.4**, which writes qualified type names as
+`module`, two colons, `type`. The newest Xcode on GitHub's runners is **26.3**,
+and its parser rejects that syntax outright, on the first conformance clause and
+again on `StikJITError : Swift::Error, Foundation::LocalizedError`.
+
+There is no newer Xcode on the runner and no compiler flag that fixes this, so
+the interfaces were rewritten mechanically by
+`build/ci/dequalify-swiftinterface.py`. 86 qualified names were reduced to the
+name they qualify. Five references to the module's own nested types were worse
+than that -- Swift printed them as `StikJIT::StikJIT.StikJIT::Configuration`,
+the module being named the same as an enum inside it -- and those became the
+plain nested name, which is what they resolve to inside the enum body. The
+module's API is unchanged: every name here is unambiguous in its own scope. The
+script is re-runnable, and the `verify-jit-invariants` job now fails in 20
+seconds if a future framework drop reintroduces the syntax, instead of 30
+minutes into a run on a Swift error that is really a bad input file.
+
+That the app target compiles at all is the news: the twelve-library native chain
+is green, and what remains is the Swift side of the app.
+
 ---
 
 ## 10. NEXT ACTIONS FOR A HUMAN

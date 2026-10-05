@@ -122,6 +122,35 @@ jobs:
       - name: Project file is structurally valid
         run: python3 tools/check_pbxproj.py
 
+      - name: The shipped Swift interfaces are readable by this Xcode
+        # app/Frameworks/StikJIT.xcframework ships no binary .swiftmodule, only
+        # .swiftinterface files, so those files are the only description of the
+        # module the app imports -- a build input like any source file. The copy
+        # in the repository was printed by Swift 6.4, whose qualified names put
+        # the module and two colons in front of the type, and the newest Xcode on
+        # GitHub's runners (26.3) cannot parse that at all:
+        #   arm64-apple-ios.private.swiftinterface:12:31: error: expected '{'
+        # That failure lands 30 minutes into the run, on the app target, where it
+        # reads like a Swift error rather than a bad input file. Checked here in
+        # 20 seconds instead; the fix is build/ci/dequalify-swiftinterface.py.
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys
+          bad = []
+          for path in sorted(glob.glob('app/**/*.swiftinterface', recursive=True)):
+              with open(path, errors='replace') as fh:
+                  for n, line in enumerate(fh, 1):
+                      code = line.split('//', 1)[0]
+                      if re.search(r'[A-Za-z_][A-Za-z_0-9]*::', code):
+                          bad.append('%s:%d: %s' % (path, n, line.strip()))
+          if bad:
+              print('::error::a swiftinterface uses qualified names this Xcode cannot parse')
+              print('::error::run build/ci/dequalify-swiftinterface.py on it')
+              print('\n'.join(bad))
+              sys.exit(1)
+          print('no qualified names in the shipped swiftinterfaces')
+          PY
+
   build:
     name: ${{ matrix.variant }}
     needs: verify-jit-invariants
