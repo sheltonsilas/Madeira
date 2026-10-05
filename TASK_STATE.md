@@ -16,7 +16,7 @@ work session and before every major decision.
 | **0. GitHub access + MCP** | Fork created and public. Token minted and working. **MCP itself could not be registered: this Freebuff build has no MCP client** (`grep -rl mcpServers` over the Freebuff source returns nothing). Used the GitHub REST API directly instead, which achieves the same outcomes. |
 | **1. Fork + read + research** | **Done.** Fork at `sheltonsilas/Madeira`. Repo read. Architecture summary in §2. iOS 27 JIT research done — see the important negative finding in §3. |
 | **2. Two variants** | **Partially done, and the split is not 50/50.** Variant A's browser and installer flow are written. Section 6 (embedded StikDebug) turns out to be **already satisfied upstream**, so that was wiring, not new code. Variant B is a documented architecture plus a manager model, because the emulator itself cannot be written here. iPad input: the model was added; upstream already has the hard parts. |
-| **3. CI + IPA** | Workflow written and wired. **No IPA has been built and none is claimed.** Blocked on macOS resources — see §5. |
+| **3. CI + IPA** | Workflow written and wired, and the entire native chain now runs on GitHub's macOS runners — the Wine unix side, ntdll/Win32u/libwineserver, the arm64ec PE farm, and DXMT's 87 objects. **No IPA has been published yet**; the first full `build.yml` run died in `dxmt-ios/combine.sh` on a path the script itself invented (fixed), and the chain was re-dispatched from `f9b0d3e`. See §5 and §9f. |
 | **4. Guide** | Done. `GUIDE.md`. |
 
 **The single most important thing to know:** the four submodules are NOT missing.
@@ -163,6 +163,18 @@ its own toolchain, so the workflow substitutes a symlink farm
 **UNTESTED:** Xcode's LLVM is not upstream's 15.0.7, so the dxmt-ios step may
 still fail on version skew. If it does, the correct fix is a real LLVM-for-iOS
 build on hardware with enough disk and RAM, not a better symlink.
+
+**Corrected in session 6 (§9f):** the headers-only substitution above is enough
+to *compile* DXMT and not enough to *link* the app. `dxmt-ios/combine.sh` merges
+`libdxmt_unix.a` with `toolchains/llvm-ios-build/lib/libLLVM*.a`, because airconv
+is a shader compiler that calls into LLVM. Those archives come from the separate
+`llvm-ios` workflow (about an hour, on demand) and reach later runs through a
+cache — a cache that never restored, for a reason worth knowing:
+`actions/cache` hashes the **path list** into a cache's identity, so a cache
+written for `toolchains/llvm-ios-build` is invisible to a step that asks for
+`toolchains`, whatever the keys say. Both workflows now name the same three
+paths the `llvm-ios` workflow does, and assert the archives are there before the
+stage that needs them runs.
 
 ---
 
@@ -465,11 +477,80 @@ the general-purpose modules (`explorer.exe`, `cmd.exe`, `services.exe`,
 so an ordinary x86-64 program had no shell, no installer and no GDI+.
 `build/wine-pe/build-universal.sh` builds that set into the farm.
 
+### 9f. SESSION 6 — WHY THE FIRST FULL RUN DIED, AND HOW IT RUNS UNATTENDED
+
+The full `build.yml` run at `285397c` (37250901109) got through the **whole
+native chain** — gnutls, ffmpeg, freetype, FEX, the Wine macOS tree, the unix
+side, libwineserver, win32u, `ntdll.dll`, and the arm64ec PE farm — and failed in
+`dxmt-ios/combine.sh` with:
+
+```
+::error::missing .../dxmt/build-ios/libdxmt_unix.a - run build/dxmt-ios/build.sh first
+```
+
+Nothing was missing. `build.sh` had just compiled 87 objects, archived them to
+`build/dxmt-ios/libdxmt_unix.a` and said so in the log; `combine.sh` looked in
+`dxmt/build-ios/libdxmt_unix.a`, a path no script has ever written. An error that
+names a missing prerequisite and is really a typo is the expensive kind: it
+costs a 40-minute run and the next person looks for a missing build.
+
+The second thing the run exposed was quieter. Every `build.yml` run logged:
+
+```
+Cache not found for input keys: toolchain-linux-<hash>, toolchain-linux-, llvm-ios-
+```
+
+so the hour-long LLVM-for-iOS build never came back, the run fell through to the
+headers-only fallback, and `combine.sh` would have failed one step later on
+`toolchains/llvm-ios-build/lib`. The cause is that `actions/cache` hashes the
+**path list** into a cache's identity: the `llvm-ios` workflow saves
+`toolchains/llvm-ios-build`, `toolchains/llvm-host-bin`,
+`toolchains/llvm-project`, and both consumers asked for `toolchains`. Same-key
+different-paths is not a near miss, it is a different cache. Fixed in both
+workflows, with an explicit assertion in front of each stage that links LLVM, so
+a cache eviction says "run the llvm-ios workflow" instead of appearing as a
+compile error half an hour later.
+
+**Unattended operation (the part that decides whether overnight works).**
+`build/ci/overnight-loop.sh` is now a chain rather than one stage:
+
+```
+bash build/ci/launch-overnight.sh rppairing-ios xcodebuild build
+```
+
+`launch-overnight.sh` starts it through PowerShell's `Start-Process`, so it has
+no console of its own — a detached bash child dies with the console Windows
+created for the tool call, which is exactly what locking the laptop ends — and
+starts `keep-awake.ps1`, which holds
+`SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)`. The display is
+deliberately **not** requested: the screen may go dark, the machine stays up. It
+still cannot override a lid-close action configured as "sleep" on battery; that
+is a power policy and needs an elevated `powercfg`. A run slept through is simply
+noticed afterwards, because conclusions are read from the GitHub API rather than
+from an internal clock.
+
+The driver's state is in `build/ci/overnight/` (gitignored): `state` records
+which targets are green *at which commit*, `inflight` records the run being
+waited on so a restart adopts it instead of racing a duplicate, `heartbeat` is
+rewritten every poll, and a failure writes `NEEDS_FIX.md` with the run URL and
+the first real error. The `build` target dispatches the full `build.yml` run and
+finishes by writing `IPA-READY.md` with the release and the two IPA downloads.
+
+---
+
 ## 10. NEXT ACTIONS FOR A HUMAN
 
 1. **Test JIT on the iPad first.** Everything else is blocked behind it (§3).
-2. Push the branch and run the workflow to see how far CI gets; expect the
-   native-library step to fail on runner resources until `heavy_toolchain` can be
-   satisfied on a bigger machine.
-3. Delete `~/.madeira-gh-token` when finished, and revoke the PAT in
+2. The chain is driven from `build/ci/overnight/`; `bash
+   build/ci/launch-overnight.sh status` shows the live run and the heartbeat,
+   and `... stop` ends it. A failure leaves `NEEDS_FIX.md` naming the run and the
+   first error, which is the only thing worth reading before changing code.
+3. The general-purpose arm64ec modules (`explorer.exe`, `services.exe`,
+   `msiexec.exe`, `gdiplus.dll`, `msi.dll`, ...) are built by
+   `build/wine-pe/build-universal.sh` and are **not tracked in git**, unlike the
+   game DLLs around them. `build.yml` builds them into the app, so an IPA is
+   complete, but a *stage* `xcodebuild` run bundles only what is tracked. If a
+   fresh clone should build without the PE step, commit them — that is a
+   deliberate follow-up, not an oversight to fix blindly.
+4. Delete `~/.madeira-gh-token` when finished, and revoke the PAT in
    GitHub → Settings → Developer settings → Personal access tokens.

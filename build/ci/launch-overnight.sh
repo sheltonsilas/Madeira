@@ -53,8 +53,11 @@ case "${1:-}" in
         cat "$DIR/inflight" 2>/dev/null || echo "(nothing)"
         echo "=== green targets at this commit ==="
         cat "$DIR/state" 2>/dev/null || echo "(none)"
-        echo "=== latest log ==="
-        ls -t "$DIR"/driver-*.log 2>/dev/null | head -1 | while read -r f; do
+        echo "=== latest output ==="
+        # The driver writes its progress to stderr on purpose (see the comment
+        # on log() in overnight-loop.sh: stdout is captured by wait_for_run), so
+        # the newest .err is usually the interesting file, not the newest .log.
+        ls -t "$DIR"/driver-*.log "$DIR"/driver-*.err 2>/dev/null | head -1 | while read -r f; do
             echo "$f"
             tail -15 "$f"
         done
