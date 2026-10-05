@@ -12,18 +12,27 @@
 # keeps the app's link line from having to name 30 LLVM libraries in the right
 # order.
 #
-# Inputs:  dxmt/build-ios/libdxmt_unix.a       (build/dxmt-ios/build.sh)
+# Inputs:  build/dxmt-ios/libdxmt_unix.a      (build/dxmt-ios/build.sh)
 #          toolchains/llvm-ios-build/lib/*.a   (build/ci/build-llvm-ios.sh)
 # Output:  app/Madeira/libdxmt_combined.a
 set -euo pipefail
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DYMT_UNIX="$R/dxmt/build-ios/libdxmt_unix.a"
+# The archive lives next to the script that makes it: build.sh sets
+# OUT_LIB="$BUILD_DIR/libdxmt_unix.a" with BUILD_DIR=build/dxmt-ios. This line
+# said dxmt/build-ios/libdxmt_unix.a, which is where nothing has ever written
+# it, so a build.yml run compiled all 87 objects, archived them successfully
+# and then failed here: "missing .../dxmt/build-ios/libdxmt_unix.a - run
+# build/dxmt-ios/build.sh first". The old path is still accepted so a tree
+# laid out by hand (the development machine's, before this script existed)
+# keeps working, but the canonical one is tried first.
+DYMT_UNIX="$R/build/dxmt-ios/libdxmt_unix.a"
+[ -f "$DYMT_UNIX" ] || DYMT_UNIX="$R/dxmt/build-ios/libdxmt_unix.a"
 LLVM_LIB="$R/toolchains/llvm-ios-build/lib"
 OUT="$R/app/Madeira/libdxmt_combined.a"
 
 test -f "$DYMT_UNIX" || {
-    echo "::error::missing $DYMT_UNIX - run build/dxmt-ios/build.sh first" >&2
+    echo "::error::missing the dxmt unix archive (looked in build/dxmt-ios/ and dxmt/build-ios/) - run build/dxmt-ios/build.sh first" >&2
     exit 1
 }
 test -d "$LLVM_LIB" || {
