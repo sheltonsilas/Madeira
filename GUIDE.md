@@ -28,8 +28,14 @@ The IPA is a build artifact. Get it from the GitHub Actions run:
 5. Windows will save a `.zip`. **Right-click it → Extract All.** Inside is the
    `.ipa`. Do not try to sign the zip.
 
-If you would rather not use Actions, the IPAs are also attached to the Releases
-page of the fork when one has been published.
+If you would rather not use Actions, every run also publishes a Release, so the
+IPAs are one click away:
+
+<https://github.com/sheltonsilas/Madeira/releases/latest>
+
+That "latest" link always means the newest build — each run publishes its own
+`build-<run number>` release, so the URL never goes stale. Both variants are
+there as `Madeira-windows-unsigned.ipa` and `Madeira-linux-unsigned.ipa`.
 
 ## 2. Install Sideloadly (easiest) on Windows
 
@@ -66,6 +72,14 @@ over Wi-Fi, so you never re-sign every week.
 2. In SideStore's settings, import your pairing file and enable JIT on your own
    apps (it has this built in).
 3. Add the IPA by URL or file.
+
+Or skip the manual step entirely: add Madeira's own SideStore source and
+SideStore installs **both** variants and re-signs them for you each week,
+without you ever downloading an IPA by hand:
+
+<https://github.com/sheltonsilas/Madeira/releases/latest/download/source.json>
+
+That source carries both variants, their icons and their JIT entitlements.
 
 SideStore is the better long-term choice because it handles the weekly refresh
 for you. Sideloadly is the faster first try.
