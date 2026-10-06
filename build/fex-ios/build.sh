@@ -72,23 +72,34 @@ if [ ! -f "$B/CMakeCache.txt" ]; then
     # `string(TOLOWER ${CMAKE_SYSTEM_PROCESSOR} processor)`, which then fails
     # with "string no output variable specified" and reports the unhelpful
     # "Unsupported processor type". Verified: this is what CI hit.
+    # ENABLE_FEX_ALLOCATOR=ON, matching build/fex-arm64ec/build.sh. It was OFF
+    # here, and that was the whole of one of the two remaining link failures: it
+    # gates `add_subdirectory(External/rpmalloc/)` in FEX/CMakeLists.txt, and
+    # that submodule is where ios_fex_band_base, ios_fex_band_end and
+    # rpm_cas_snapshot_take are defined -- while Core.cpp:1971 calls
+    # rpm_cas_snapshot_take with no guard at all, and AllocatorHooks.cpp's
+    # IosRpmGuard needs fex_ios_rpm_lock/unlock from the same file. The source
+    # states the intended invariant itself, beside those globals: they live there
+    # "purely so that every FEX binary that links FEXCore" has them. So
+    # links-FEXCore implies links-rpmalloc, and OFF broke it.
+    # (JemallocLibs' #else branch does keep the Allocator functions working with
+    # OFF, which is why those five symbols cleared separately -- with ON they
+    # simply route through rpmalloc instead of posix_memalign.)
+    #
+    # ⛔ NOTHING may sit between the `cmake` line and its last argument. A comment
+    # there is not harmless: the backslash-newline joins the lines first, then the
+    # `#` begins a word, and bash drops the REST OF THE COMMAND as a comment -- so
+    # every argument after it is silently never passed. That is exactly how this
+    # change first shipped. The paragraph above sat between
+    # -DBUILD_FEX_LINUX_TESTS=OFF and -DENABLE_FEX_ALLOCATOR=ON, which dropped both
+    # -DENABLE_FEX_ALLOCATOR=ON and -DTUNE_CPU=none; the run then died in FEX's
+    # configure on a missing /proc/cpuinfo because TUNE_CPU had silently gone back
+    # to "native". `bash -n` accepts it -- it is valid syntax -- so nothing but a
+    # real configure catches it.
     cmake -S "$R/FEX" -B "$B" -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=arm64 \
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
-        # ENABLE_FEX_ALLOCATOR=ON, matching build/fex-arm64ec/build.sh. It was OFF
-        # here, and that was the whole of one of the two remaining link failures:
-        # it gates `add_subdirectory(External/rpmalloc/)` in FEX/CMakeLists.txt,
-        # and that submodule is where ios_fex_band_base, ios_fex_band_end and
-        # rpm_cas_snapshot_take are defined -- while Core.cpp:1971 calls
-        # rpm_cas_snapshot_take with no guard at all, and AllocatorHooks.cpp's
-        # IosRpmGuard needs fex_ios_rpm_lock/unlock from the same file. The
-        # source states the intended invariant itself, beside those globals:
-        # they live there "purely so that every FEX binary that links FEXCore"
-        # has them. So links-FEXCore implies links-rpmalloc, and OFF broke it.
-        # (JemallocLibs' #else branch does keep the Allocator functions working
-        # with OFF, which is why those five symbols cleared separately -- with
-        # ON they simply route through rpmalloc instead of posix_memalign.)
         -DENABLE_FEX_ALLOCATOR=ON -DENABLE_ASSERTIONS=OFF -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
         -DTUNE_CPU=none \
         -DCMAKE_C_FLAGS=-DFEX_IOS_HOST -DCMAKE_CXX_FLAGS=-DFEX_IOS_HOST -DCMAKE_ASM_FLAGS=-DFEX_IOS_HOST

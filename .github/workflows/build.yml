@@ -122,6 +122,15 @@ jobs:
       - name: Project file is structurally valid
         run: python3 tools/check_pbxproj.py
 
+      - name: No comment sits inside a continued shell command
+        # Twenty seconds here against a full native-chain rebuild: in bash a
+        # backslash-newline is removed before comment processing, so a `#` inside
+        # an argument list swallows the rest of the command and the options after
+        # it are never passed. That is how the ENABLE_FEX_ALLOCATOR change first
+        # shipped, dropping -DTUNE_CPU=none with it. `bash -n` accepts it, so this
+        # is the only check that can catch it before macOS does.
+        run: python3 tools/check_shell_continuations.py
+
       - name: The shipped Swift interfaces are readable by this Xcode
         # app/Frameworks/StikJIT.xcframework ships no binary .swiftmodule, only
         # .swiftinterface files, so those files are the only description of the
