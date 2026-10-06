@@ -1,4 +1,9 @@
-/* iOS-Madeira -- the app's own copy of the FEX iOS bridges.
+/* iOS-Madeira -- the app's own copy of the iOS-only symbols FEXCore expects.
+ *
+ * This file provides two groups: the FEX bridges (below), and the allocator
+ * globals that ship inside the rpmalloc submodule (further down). Both have the
+ * same shape of problem: FEX arranges for a guest *module* to define them, and
+ * the app is a third consumer of FEXCore that links no module.
  *
  * WHY THIS FILE EXISTS
  * --------------------
@@ -270,4 +275,62 @@ IOS_FEX_EXPORT void ios_fex_mono_count_helper(int Miss) {
     if (Miss) {
         __atomic_add_fetch(&B->n_alias_miss, 1, __ATOMIC_RELAXED);
     }
+}
+
+/* ------------------------------------------------------------------------
+ * The allocator globals, which normally live in the rpmalloc submodule
+ *
+ * FEXCore references these unconditionally. Their definitions are in
+ * FEX/External/rpmalloc/rpmalloc/rpmalloc.c, inside its `#ifdef FEX_IOS_HOST`
+ * block, and that submodule is added only under `if (ENABLE_FEX_ALLOCATOR)` --
+ * which FEX's own CMakeLists.txt forces to FALSE on Apple:
+ *
+ *     if (APPLE)
+ *       set(ENABLE_FEX_ALLOCATOR FALSE)
+ *       message(STATUS "Apple platform detected - disabling jemalloc and rpmalloc")
+ *
+ * A plain set() shadows a -D from the command line, so passing ON cannot help.
+ * I tried that first, and it is worth recording why it was worse than useless:
+ * it does not add the submodule, so librpmalloc.a is never produced, while my
+ * pbxproj edit had already asked the linker for it. The link would have failed
+ * on a missing library instead of a missing symbol. Both halves are reverted.
+ *
+ * The comment in rpmalloc.c beside these says they live there "purely so that
+ * every FEX binary that links FEXCore has a definition without each one needing
+ * its own". On Apple that promise cannot be kept by rpmalloc, so the app keeps
+ * it here. Nothing about the values is invented:
+ *
+ *   - the two band globals are 0, which is the value the submodule itself
+ *     starts them at and which every reader treats as "not published".
+ *     AllocatorHooks.h says so directly: `if (!ios_fex_band_base)`, then "No
+ *     host-only band on this device. Falling through to the unconstrained path
+ *     is exactly what corrupts a constrained device, so fail visibly instead",
+ *     and it returns nullptr. On this host the band genuinely was never chosen,
+ *     because the code that chooses it (ios_fex_band_select) is inside the
+ *     PLATFORM_WINDOWS branch of that same file.
+ *
+ *   - the JIT-pool pair is 0 for the same reason, and its comment gives the
+ *     meaning: "Zero means 'not published yet' and disables the check rather
+ *     than failing allocations." On the modules, Module.cpp fills them in at
+ *     process init; there is no such init here.
+ *
+ *   - rpm_cas_snapshot_take returning 0 is the documented "no snapshot
+ *     available": Core.cpp only uses it to print one [rpm-cas] diagnostic line,
+ *     and returns early when it is 0. There is no rpmalloc CAS machinery in this
+ *     process to snapshot, so 0 is the true answer, not a placeholder.
+ * ------------------------------------------------------------------------ */
+
+IOS_FEX_EXPORT uintptr_t ios_fex_band_base = 0;
+IOS_FEX_EXPORT uintptr_t ios_fex_band_end = 0;
+IOS_FEX_EXPORT uintptr_t ios_fex_jit_pool_rx = 0;
+IOS_FEX_EXPORT uintptr_t ios_fex_jit_pool_end = 0;
+
+/* Left incomplete on purpose: nothing here reads the struct, and the caller
+ * (Core.cpp) declares it inside an extern "C" block, so the C++ name and this
+ * one are the same symbol. */
+struct rpm_cas_snapshot;
+
+IOS_FEX_EXPORT int rpm_cas_snapshot_take(struct rpm_cas_snapshot *out) {
+    (void)out;
+    return 0;
 }
