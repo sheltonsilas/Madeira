@@ -52,8 +52,16 @@ PY
 # CMake only reads the option cache entries at configure time, so an inherited
 # cache would silently pin TUNE_CPU back to "native" and drop the FEX_IOS_HOST
 # define, and the flags below would then do nothing on the next run.
+# ENABLE_FEX_ALLOCATOR is in this guard for the same reason as the other three,
+# and it is the one that actually bit: CI caches FEX/build-ios under a key built
+# from hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') -- not from this
+# script. So flipping the flag below without invalidating that cache restores a
+# CMakeCache.txt that still says OFF, the guard skips the reconfigure, and the
+# build silently keeps the old configuration while the log says nothing. CMake
+# reads option entries only at configure time.
 if [ -f "$B/CMakeCache.txt" ] && { ! grep -q 'CMAKE_SYSTEM_PROCESSOR:.*=arm64' "$B/CMakeCache.txt" \
      || ! grep -q 'TUNE_CPU:.*=none' "$B/CMakeCache.txt" \
+     || ! grep -q 'ENABLE_FEX_ALLOCATOR:.*=ON' "$B/CMakeCache.txt" \
      || ! grep -q 'CXX_FLAGS.*FEX_IOS_HOST' "$B/CMakeCache.txt"; }; then
     echo "=== stale or untuned CMakeCache; reconfiguring ==="
     rm -rf "$B"
@@ -68,7 +76,20 @@ if [ ! -f "$B/CMakeCache.txt" ]; then
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
-        -DENABLE_FEX_ALLOCATOR=OFF -DENABLE_ASSERTIONS=OFF -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
+        # ENABLE_FEX_ALLOCATOR=ON, matching build/fex-arm64ec/build.sh. It was OFF
+        # here, and that was the whole of one of the two remaining link failures:
+        # it gates `add_subdirectory(External/rpmalloc/)` in FEX/CMakeLists.txt,
+        # and that submodule is where ios_fex_band_base, ios_fex_band_end and
+        # rpm_cas_snapshot_take are defined -- while Core.cpp:1971 calls
+        # rpm_cas_snapshot_take with no guard at all, and AllocatorHooks.cpp's
+        # IosRpmGuard needs fex_ios_rpm_lock/unlock from the same file. The
+        # source states the intended invariant itself, beside those globals:
+        # they live there "purely so that every FEX binary that links FEXCore"
+        # has them. So links-FEXCore implies links-rpmalloc, and OFF broke it.
+        # (JemallocLibs' #else branch does keep the Allocator functions working
+        # with OFF, which is why those five symbols cleared separately -- with
+        # ON they simply route through rpmalloc instead of posix_memalign.)
+        -DENABLE_FEX_ALLOCATOR=ON -DENABLE_ASSERTIONS=OFF -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
         -DTUNE_CPU=none \
         -DCMAKE_C_FLAGS=-DFEX_IOS_HOST -DCMAKE_CXX_FLAGS=-DFEX_IOS_HOST -DCMAKE_ASM_FLAGS=-DFEX_IOS_HOST
 fi
@@ -80,10 +101,12 @@ fi
 # not a stale project reference. Building only FEXCore and FEXCore_Base left the
 # archive absent, and the next link then failed on five undefined Allocator symbols.
 #
-# Building it with ENABLE_FEX_ALLOCATOR=OFF is correct and is what the flag is for:
-# AllocatorHooks.cpp keeps the same namespace and function bodies in its #else
-# branch, routing them through posix_memalign/free instead of rpmalloc, which is
-# what a single-process iOS host wants. The sibling fex-arm64ec/build.sh passes
-# ON because that is a Windows-hosted build with jemalloc available.
-cmake --build "$B" --target FEXCore FEXCore_Base JemallocLibs
+# rpmalloc is listed as well as JemallocLibs. JemallocLibs declares
+# `target_link_libraries(JemallocLibs PUBLIC rpmalloc)`, so building it does
+# build rpmalloc first, but naming it here makes the archive this script is
+# expected to leave behind explicit -- the app links librpmalloc.a directly,
+# because a static library's transitive dependency does not survive into
+# Xcode's link line.
+cmake --build "$B" --target FEXCore FEXCore_Base JemallocLibs rpmalloc
 ls "$B/FEXCore/Source/"*.a
+ls "$B/External/rpmalloc/"*.a 2>/dev/null || true

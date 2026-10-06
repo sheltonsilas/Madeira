@@ -32,6 +32,13 @@
 
 #include <stdint.h>
 
+/* The counterpart of this define lives in FEX's copy of this header,
+ * FEX/Source/Windows/ARM64EC/IosMonoBridge.h -- the one file that is supposed to
+ * stay byte-identical to this one. It was missing here, so the app-side bridge
+ * (ios_fex_host_bridge.c) had no ABI value to check against. FEX refuses to arm
+ * a bridge whose abi_version does not match, which is what turns a silent struct
+ * drift into one loud line; both copies must carry the same number. */
+#define IOS_MONO_ABI_VERSION 2
 #define IOS_MONO_MAX_ALIASES 4096
 #define IOS_MONO_MAX_CONTEXTS 64
 

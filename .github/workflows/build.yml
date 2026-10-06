@@ -345,13 +345,24 @@ jobs:
         # incremental make trees, so a cache turns a long iteration into a
         # short one. The key follows the submodule pins: bumping FEX or Wine
         # starts a fresh tree rather than resurrecting stale objects.
+        #
+        # The three build scripts are in the hash as well, and that is not
+        # belt-and-braces -- it is the fix for a real trap. `hashFiles` cannot
+        # read a submodule pin, so `FEX/CMakeLists.txt` was standing in for one;
+        # but the *configure options* live in build/fex-ios/build.sh, which was
+        # not hashed at all. CMake reads option cache entries only at configure
+        # time, and build/fex-ios/build.sh skips reconfiguring when a
+        # CMakeCache.txt is already present, so editing a -D flag there changed
+        # nothing at all on a cache hit: the restored cache silently pinned the
+        # old value and the log showed no sign of it. Turning on
+        # ENABLE_FEX_ALLOCATOR is exactly such a change.
         uses: actions/cache@v4
         with:
           path: |
             FEX/build-ios
             wine/build-macos
             wine/build-arm64ec
-          key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md') }}
+          key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md', 'build/fex-ios/build.sh', 'build/wine-macos/build.sh', 'build/wine-pe/configure-arm64ec.sh') }}
           restore-keys: native-${{ matrix.variant }}-
 
       - name: The LLVM-for-iOS archives the shader compiler links against

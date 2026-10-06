@@ -202,6 +202,34 @@ else
     sed -n '1,40p' "$OBJ_DIR/wg_parser_apple_ios.err" | sed 's/^/        /'
 fi
 
+# iOS-Madeira: the app's own copy of the FEX iOS bridges. FEXCore calls
+# IosMonoResolveRW, IosSubfloorToReal and the five ios_fex_mono_* symbols
+# unconditionally on an iOS host, and their only definitions live in the guest
+# *modules* (Source/Windows/WOW64, Source/Windows/ARM64EC) -- which the app does
+# not link. FEX makes them resolve for the modules by linking module and FEXCore
+# into one image ($<TARGET_OBJECTS:FEXCore_object> in both module CMakeLists);
+# the app is a third consumer of FEXCore and needs its own copy.
+#
+# Compiled with NO Wine header, like wg_parser_apple_ios above and for the same
+# kind of reason: this file is a bridge into FEX, not into Wine, and it must
+# carry no windows.h (the module's version does, for a TEB read that this host
+# does not have). See the file's own header for the full account, including why
+# the WOW64 variant is the right one here and why the null-bridge default is a
+# documented, safe state rather than a stub.
+echo -n "  ios_fex_host_bridge... "
+if xcrun -sdk iphoneos clang \
+    -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+    -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing -Wall -Werror=implicit-function-declaration \
+    -c "$BUILD_DIR/ios_fex_host_bridge.c" -o "$OBJ_DIR/ios_fex_host_bridge.o" 2>"$OBJ_DIR/ios_fex_host_bridge.err"; then
+    echo "OK"
+    SUCCEEDED=$((SUCCEEDED + 1))
+else
+    echo "FAILED"
+    FAILED=$((FAILED + 1))
+    FAILED_FILES="$FAILED_FILES ios_fex_host_bridge"
+    sed -n '1,40p' "$OBJ_DIR/ios_fex_host_bridge.err" | sed 's/^/        /'
+fi
+
 for src in $WINE_SRC/dlls/ntdll/unix/*.c; do
     name=$(basename "$src" .c)
 
@@ -261,7 +289,8 @@ ar rcs "$OBJ_DIR/libntdll_unix.a" \
     "$OBJ_DIR/security.o" "$OBJ_DIR/serial.o" "$OBJ_DIR/server.o" \
     "$OBJ_DIR/signal_arm.o" "$OBJ_DIR/signal_arm64.o" "$OBJ_DIR/signal_i386.o" "$OBJ_DIR/signal_x86_64.o" \
     "$OBJ_DIR/socket.o" "$OBJ_DIR/sync.o" "$OBJ_DIR/syscall.o" "$OBJ_DIR/system.o" \
-    "$OBJ_DIR/tape.o" "$OBJ_DIR/thread.o" "$OBJ_DIR/virtual.o"
+    "$OBJ_DIR/tape.o" "$OBJ_DIR/thread.o" "$OBJ_DIR/virtual.o" \
+    "$OBJ_DIR/ios_fex_host_bridge.o"
 
 echo "Copying to app..."
 cp "$OBJ_DIR/libntdll_unix.a" "$APP_LIB"
