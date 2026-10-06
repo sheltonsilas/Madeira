@@ -223,7 +223,10 @@ jobs:
           set -euo pipefail
           mkdir -p toolchains
           url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
-          curl -fSL "$url" -o /tmp/llvm-mingw.tar.xz
+          # --retry-connrefused because --retry does not cover a connection that
+          # was never established, which is how a runner loses this step for
+          # reasons that have nothing to do with the code.
+          curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o /tmp/llvm-mingw.tar.xz
           echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  /tmp/llvm-mingw.tar.xz" | sha256sum -c -
           tar -xJf /tmp/llvm-mingw.tar.xz -C toolchains
 
@@ -314,7 +317,7 @@ jobs:
             echo "using cached $tarball ($(du -h "$tarball" | cut -f1))"
           else
             echo "fetching $url"
-            curl -fSL --retry 3 "$url" -o "$tarball"
+            curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o "$tarball"
           fi
           # Resolve the archive's top-level directory instead of extracting a
           # "*/include" glob. bsdtar exits 0 even when a member pattern matches

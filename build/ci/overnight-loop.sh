@@ -195,13 +195,29 @@ for j in js.get('jobs',[]):
     print(j['id'])
 " 2>/dev/null); do
         local out="$DIR/$label-$run-$id.log"
-        api "$API/actions/jobs/$id/logs" -o "$out"
-        if [ -s "$out" ]; then
+        local got=0 attempt
+        for attempt in 1 2 3 4 5; do
+            api "$API/actions/jobs/$id/logs" -o "$out" || true
+            # GitHub answers a log request it cannot serve with a two-line XML
+            # blob (BlobNotFound) rather than an HTTP error, so asking whether the
+            # file arrived accepted that blob as the log: no infrastructure
+            # signature in it, so the loop declined to retry a network failure it
+            # had every reason to retry. Accept the payload only if it looks like
+            # a runner log -- not XML, not JSON, and long enough to be one.
+            if [ -s "$out" ] && [ "$(wc -l < "$out")" -ge 5 ]                 && ! head -c 16 "$out" | grep -aqE '<[?]xml|[{]'; then
+                got=1
+                break
+            fi
+            rm -f "$out"
+            sleep $((attempt * 5))
+        done
+        if [ "$got" = 1 ]; then
             RUN_LOGS+=("$out")
             log "log saved: $out"
             first_errors "$out"
         else
-            rm -f "$out"
+            log "WARNING: could not fetch the log for job $id in 5 attempts;"
+            log "WARNING: the retry decision below will be made without it"
         fi
     done
 }

@@ -68,7 +68,9 @@ for a in json.load(sys.stdin).get("assets",[]):
 ')
         test -n "$url" || { echo "::error::no llvm-project-$VERSION.src.tar.xz asset found"; exit 1; }
         echo "    fetching $url"
-        curl -fSL --retry 3 "$url" -o "$TARBALL"
+        # Same reasoning as ensure-bison.sh: --retry does not retry a
+        # connection that was never established.
+        curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o "$TARBALL"
     fi
     mkdir -p "$SRC.tmp"
     tar -xJf "$TARBALL" -C "$SRC.tmp" --strip-components=1

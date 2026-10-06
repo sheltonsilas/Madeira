@@ -53,7 +53,12 @@ fi
 
 echo "=== building GNU bison $VERSION from source ==="
 if [ ! -f "$TARBALL" ]; then
-    curl -fSL --retry 3 "https://ftp.gnu.org/gnu/bison/$TARBALL_NAME" -o "$TARBALL"
+    # A runner that cannot open one TCP connection to ftp.gnu.org failed the whole
+# run on curl's first attempt, sixteen minutes in. --retry alone does not cover
+# that: it retries HTTP errors and read timeouts, not a connection that was
+# never established. These flags make a transient connect failure heal inside
+# the job instead of costing everything built before it.
+    curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "https://ftp.gnu.org/gnu/bison/$TARBALL_NAME" -o "$TARBALL"
 fi
 echo "$TARBALL_SHA256  $TARBALL" | shasum -a 256 -c - \
     || { echo "::error::$TARBALL_NAME does not match the pinned SHA-256"; exit 1; }
