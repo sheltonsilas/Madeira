@@ -473,7 +473,6 @@
 				B2000003 /* JITBuiltInMessages.swift */,
 				B2000040 /* JITPairing.swift */,
 				C3000001 /* Variant */,
-				C2000007 /* JitOnboardingView.swift */,
 				B2000042 /* MadeiraRPPairing.h */,
 				B2000004 /* madeira-jit.js */,
 				B2000051 /* Madeira JIT.shortcut */,
@@ -570,6 +569,7 @@
 				C2000004 /* WindowsInstallerBridge.swift */,
 				C2000005 /* PointerMode.swift */,
 				C2000006 /* LinuxEnvironmentStore.swift */,
+				C2000007 /* JitOnboardingView.swift */,
 			);
 			path = Variant;
 			sourceTree = "<group>";
