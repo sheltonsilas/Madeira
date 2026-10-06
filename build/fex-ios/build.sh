@@ -72,5 +72,18 @@ if [ ! -f "$B/CMakeCache.txt" ]; then
         -DTUNE_CPU=none \
         -DCMAKE_C_FLAGS=-DFEX_IOS_HOST -DCMAKE_CXX_FLAGS=-DFEX_IOS_HOST -DCMAKE_ASM_FLAGS=-DFEX_IOS_HOST
 fi
-cmake --build "$B" --target FEXCore FEXCore_Base
+# JemallocLibs is the third archive the app links, and it is the only definition of
+# FEXCore::Allocator::malloc/free/memalign/aligned_alloc/aligned_free in the whole
+# tree (FEX/FEXCore/Source/Utils/AllocatorHooks.cpp). FEX declares that target
+# unconditionally -- it is not inside the APPLE branch that disables jemalloc and
+# rpmalloc -- so the `ld: library 'JemallocLibs' not found` failure was this line,
+# not a stale project reference. Building only FEXCore and FEXCore_Base left the
+# archive absent, and the next link then failed on five undefined Allocator symbols.
+#
+# Building it with ENABLE_FEX_ALLOCATOR=OFF is correct and is what the flag is for:
+# AllocatorHooks.cpp keeps the same namespace and function bodies in its #else
+# branch, routing them through posix_memalign/free instead of rpmalloc, which is
+# what a single-process iOS host wants. The sibling fex-arm64ec/build.sh passes
+# ON because that is a Windows-hosted build with jemalloc available.
+cmake --build "$B" --target FEXCore FEXCore_Base JemallocLibs
 ls "$B/FEXCore/Source/"*.a

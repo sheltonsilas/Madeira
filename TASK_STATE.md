@@ -679,13 +679,20 @@ Fixed this session, in the order they were found:
     the first time this project has ever type-checked its own app target, and it
     was reached only after the JitOnboardingView path, the publish condition and
     the bison fault were out of the way. The run then died in the linker with
-    `ld: library 'JemallocLibs' not found`, and FEX's own `CMakeLists.txt` says
-    why: `if (APPLE)` disables `ENABLE_JEMALLOC_GLIBC_ALLOC` and
-    `ENABLE_FEX_ALLOCATOR`, so that library is never built for iOS and the
-    Frameworks phase was asking for a file the build does not produce. Removed,
-    along with the reason the new `check_pbxproj.py` check deliberately does not
-    cover link inputs: those are build outputs, and which of them exist depends
-    on which steps ran.
+    `ld: library 'JemallocLibs' not found`. I first read that as a stale project
+    reference and deleted the four pbxproj lines -- **that was wrong, and the
+    change is reverted.** `add_library(JemallocLibs STATIC
+    Utils/AllocatorHooks.cpp)` in `FEX/FEXCore/Source/CMakeLists.txt` is
+    unconditional; it is the nearby `if (APPLE)` block that only disables
+    `ENABLE_JEMALLOC_GLIBC_ALLOC`/`ENABLE_FEX_ALLOCATOR`, not the target itself.
+    `AllocatorHooks.cpp` is also the *only* definition of
+    `FEXCore::Allocator::{malloc,free,memalign,aligned_alloc,aligned_free}` in
+    the tree, and its `#else` branch keeps all five on Apple (routing them
+    through `posix_memalign` instead of rpmalloc), which is exactly what
+    `ENABLE_FEX_ALLOCATOR=OFF` is for. The real fault was one token in
+    `build/fex-ios/build.sh`: `cmake --build --target FEXCore FEXCore_Base`
+    never asked for the archive, so the linker then reported the five symbols
+    undefined. Target added.
 
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
