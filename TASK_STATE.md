@@ -576,12 +576,100 @@ is green, and what remains is the Swift side of the app.
 
 ---
 
+## 9d. SESSION 5 -- THE FIRST RUN THAT GETS PAST THE VARIANT SOURCES
+
+Two facts frame this session, and the second is the important one.
+
+**The fork had two histories, and the local checkout was the wrong one.** The
+local branch held 536 commits: upstream's real history, in which the project is
+called Mythic for most of it (`app/Mythic/`, and the Wine-side `*_ios.c` files
+that name it), with this fork's work interleaved. `fork/feature/
+two-variants-browser-and-linux` held 60 commits sharing no commit with it after
+`a70caf9` -- the same work, rebuilt on the current upstream base (`fork/main`,
+475 commits beyond `origin/main`). Rebasing the 536 onto the 60 was therefore
+replaying roughly 415 upstream commits the base already contained, with a
+Mythic-to-Madeira rename conflict in every Wine source file it touched. It was
+22 commits into 415 when this session stopped it, and stopping it was correct:
+the 60-commit lineage is the one every run in section 9c was made from, and the
+only thing it was missing is one file, taken from the other
+(`build/ci/overnight-loop.sh`). `git tag old-local-lineage-536` keeps the old
+branch. Nothing was force-pushed.
+
+**The app had never been compiled. Not once.** Every run until now died before
+the app target -- the native chain, then the PE farm, then DXMT and its merge,
+then a file that was not where the project file said it was. Run 37400691096 was
+the first to build the entire native chain *and* reach the Swift compiler, and
+the compiler then reported the first seventeen errors these sources have ever
+produced. They were written with no compiler available, and they said so.
+
+Fixed this session, in the order they were found:
+
+  * `app/Madeira/Variant/JitOnboardingView.swift` was a child of the application
+    group, so `path = JitOnboardingView.swift` resolved to
+    `app/Madeira/JitOnboardingView.swift`, and xcodebuild failed both variants
+    with "Build input file cannot be found". It is a child of `Variant` now, like
+    the other six. (cd4a469)
+  * `tools/check_pbxproj.py` now proves that every Sources and Resources input
+    resolves to a file that exists. Pointed at the revision before that fix it
+    names `Madeira/JitOnboardingView.swift` in twenty seconds; the checks it
+    already had (braces, parens, duplicate IDs, dangling IDs) all passed while a
+    run compiled for twenty-four minutes and then failed on that one file. The
+    Frameworks phase is deliberately out of scope -- it names archives that
+    earlier steps of the same run build, and a check that has to be told which
+    of those are legitimate is a check that gets muted. (1427484)
+  * The seventeen compile errors, in three files (1427484):
+      - `JitManager.debuggableSignature` called `SecTaskCreateFromSelf` and
+        `SecTaskCopyValueForEntitlement` directly. The iOS SDK declares neither.
+        Upstream's `EntitlementChecker.swift` binds both symbols itself, for
+        exactly that reason, and exposes `checkAppEntitlement`; JitManager calls
+        that instead of keeping a second copy of the declaration.
+      - `BrowserDownload` was not `Codable`, so the download shelf's JSON
+        sidecar could never be written or read; `pendingInstall =
+        download.id` assigned a UUID where the type wants a download; and
+        `WKDownload.originalRequest` is optional, in three places.
+      - `WindowsInstallerBridge` used `NSString`'s `deletingPathExtension` and
+        `pathExtension` on a `String`, passed `cString(using:)` unapplied where a
+        C pointer is required, read a `private` `programRoots` from another type
+        in the same file, and named two `URLResourceKey` members without a
+        contextual type.
+  * `build/ci/overnight-loop.sh`'s documented `chain` mode was dead code --
+    nothing called `_run_chained` -- and its first real target,
+    `dxmt-ios/combine`, is not a stage this repository's `stage.yml` has (it is
+    folded into `dxmt-ios`). `chain` now selects it, and the target list is
+    valid. (1427484)
+  * A commit made with `git commit -am` partway through swept the FEX and wine
+    gitlink changes into it. It was reset before any push: those pointers are
+    what a clean checkout resolves, `build.yml` fails its own reachability check
+    when a submodule commit is not on the remote, and the change was not this
+    session's to make. The working tree still carries them, unstaged, exactly as
+    it did before.
+
+  * The `publish` job could never have run. Its condition was "the ref is the
+    default branch, or this was a dispatch", and this repository's default
+    branch is upstream's `main`, the branch the fork was made from, while every
+    build here runs from a working branch -- so every run in sections 9b, 9c and
+    here reported `publish` as skipped. Had the IPAs built, they would have
+    existed only as 30-day workflow artifacts. The condition is now "not a pull
+    request", which is the guard a fork actually needs, and it is the difference
+    between an IPA in a download table and an IPA in a folder of run logs.
+
+For section 5, this changes the honest reason no IPA exists. It is no longer
+"the native chain does not build", and no longer "the project file points at a
+file that is not there". It is only the Swift in the app target, which has now
+been compiled exactly once. Expect a second generation of these errors; that is
+progress, not regression.
+
 ## 10. NEXT ACTIONS FOR A HUMAN
 
 1. **Test JIT on the iPad first.** Everything else is blocked behind it (§3).
 2. The chain is driven from `build/ci/overnight/`; `bash
    build/ci/launch-overnight.sh status` shows the live run and the heartbeat,
-   and `... stop` ends it. A failure leaves `NEEDS_FIX.md` naming the run and the
+   and `... stop` ends it. The launcher also holds the machine awake with
+   SetThreadExecutionState, which needs no elevation. It cannot override a
+   lid-close action configured as sleep -- that is a power policy, not an idle
+   decision, and changing it needs an elevated powercfg. A run is not lost when
+   that happens: everything expensive happens on GitHub's runners, and the loop
+   reads conclusions from the API, so it simply notices the run later. A failure leaves `NEEDS_FIX.md` naming the run and the
    first error, which is the only thing worth reading before changing code.
 3. The general-purpose arm64ec modules (`explorer.exe`, `services.exe`,
    `msiexec.exe`, `gdiplus.dll`, `msi.dll`, ...) are built by
@@ -592,3 +680,5 @@ is green, and what remains is the Swift side of the app.
    deliberate follow-up, not an oversight to fix blindly.
 4. Delete `~/.madeira-gh-token` when finished, and revoke the PAT in
    GitHub → Settings → Developer settings → Personal access tokens.
+   It is deliberately still on disk while a run is in flight: the driver reads
+   it on every poll.

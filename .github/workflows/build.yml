@@ -442,7 +442,16 @@ jobs:
   publish:
     name: Publish IPAs and a SideStore source
     needs: build
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || github.event_name == 'workflow_dispatch'
+    # Publish for a push to any branch of this repository, and for a dispatch,
+    # but never for a pull request: a pull request may come from a fork, and
+    # contents: write here is not a permission a fork gets. The previous test --
+    # the ref equals the default branch -- was never true in this repository.
+    # The default branch is upstream's main, the branch this one was forked
+    # from, and every build here runs from a working branch. So every run since
+    # the fork existed reported this job as skipped, and the IPAs, when they are
+    # produced, would have stayed as workflow artifacts: thirty days, no release
+    # page, and nothing for SideStore to point at.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       # Required to create the release and upload assets.
