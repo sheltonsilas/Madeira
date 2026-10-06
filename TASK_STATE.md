@@ -666,6 +666,15 @@ Fixed this session, in the order they were found:
     what arrived is what was asked for. Verified against a stub Homebrew that
     reproduces the keg-only case.
 
+    Necessary, and not sufficient. All three callers run that script as a child
+    process and then add `$R/toolchains/bison-3.8.2/bin` to their own PATH --
+    carrying a comment that says "if it had to build one". With Homebrew's
+    bottle there was no such directory, so Wine's configure went on to run
+    macOS's 2.3 and failed with "Your bison version is too old" three seconds
+    after the script had reported 3.8.2 installed. The script now links the
+    keg's binary into `$PREFIX/bin`, where the source build already puts it, so
+    both routes leave the same thing behind for the caller to find.
+
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
 file that is not there". It is only the Swift in the app target, which has now

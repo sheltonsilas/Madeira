@@ -50,7 +50,17 @@ if command -v brew >/dev/null 2>&1; then
         export PATH="$keg/bin:$PATH"
         hash -r 2>/dev/null || true
         if [ "$(major || echo 0)" -ge 3 ] 2>/dev/null; then
-            echo "bison: $(bison --version | head -1)"
+            # Every caller runs this script as a child process and then adds
+            # $PREFIX/bin to its own PATH -- a directory that only exists when
+            # this script built bison from source. With Homebrew's bottle there
+            # was nothing in it, so Wine's configure went on to find macOS's
+            # 2.3 and refused to build anything. Leaving the keg's binary at the
+            # path the callers already look in makes both cases the same shape,
+            # and a symlink is enough: Homebrew's bottle has its data files at
+            # absolute paths inside the keg.
+            mkdir -p "$PREFIX/bin"
+            ln -sf "$keg/bin/bison" "$PREFIX/bin/bison"
+            echo "bison: $(bison --version | head -1) (linked into $PREFIX/bin)"
             exit 0
         fi
         echo "    Homebrew's bison is installed but still not on PATH"
