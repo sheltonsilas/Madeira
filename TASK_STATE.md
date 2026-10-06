@@ -804,6 +804,93 @@ about which guests the host supports -- WOW64 (32-bit) or ARM64EC (x86-64) --
 and Variant A is the x86-64 one, which points at `IosJitAlias.cpp`. That
 decision is why this half is left alone pending review.
 
+## 9g. FAMILY 3 SOLVED, AND THE THREE MISTAKES ON THE WAY
+
+The goal now is one push away, but **the push is blocked on an account
+condition, not on code** -- see the end of this section.
+
+### The answer to family 3: the app supplies all ten symbols itself
+
+Both halves turned out to be the same shape of problem. FEX arranges for a
+guest *module* to define these symbols, and the app is a third consumer of
+FEXCore that links no module, so the app must define them.
+
+The bridge half: `IosMonoBridge.cpp` says it outright -- "each statically links
+its own copy of FEXCore, so neither can borrow the other's storage".
+`build/ntdll-unix/ios_fex_host_bridge.c` is the app's copy, taken from the WOW64
+variant because the app's FEXCore is a plain aarch64 build (`Core.cpp` itself
+calls the WOW64 module "a plain aarch64 PE"), and the ARM64EC file cannot be
+used at all here since it needs `windows.h` and its alias table is consumed by
+`Module.S`.
+
+The allocator half is the same story with a twist I got wrong first.
+`ios_fex_band_base`, `ios_fex_band_end` and `rpm_cas_snapshot_take` live in the
+`External/rpmalloc` submodule, under `if (ENABLE_FEX_ALLOCATOR)` -- and FEX's
+CMakeLists.txt does not merely default that off on Apple, it *forces* it:
+
+    if (APPLE)
+      set(ENABLE_FEX_ALLOCATOR FALSE)
+      message(STATUS "Apple platform detected - disabling jemalloc and rpmalloc")
+
+A plain `set()` shadows a `-D` from the command line. So the submodule is never
+added on this platform, period, and those three symbols plus
+`ios_fex_jit_pool_rx/_end` have no definition in any build that links FEXCore.
+The app defines them, all at the values the submodule itself would start them
+at: the band and JIT-pool globals at 0, which every reader documents as "not
+published" (AllocatorHooks.h returns nullptr and calls failing visibly the
+right answer for a constrained device), and `rpm_cas_snapshot_take` returning 0,
+which is its documented "no snapshot" and which Core.cpp uses only to print one
+diagnostic line.
+
+### Three mistakes, all mine, all worth recording
+
+1. **I read the CMake message and drew the wrong conclusion.** "Apple platform
+   detected -- disabling jemalloc and rpmalloc" did not stop me from passing
+   `-DENABLE_FEX_ALLOCATOR=ON`, adding `rpmalloc` to the cmake `--target` list
+   (no such target exists on Apple -- that alone would have failed the build)
+   and adding `librpmalloc.a` to the app's Frameworks phase, asking the linker
+   for a file that branch guarantees is never produced. It would have replaced a
+   missing-symbol failure with a missing-library one. Reverted.
+
+2. **I put a comment inside a backslash-continued `cmake` argument list.** In
+   bash the backslash-newline is removed *before* comment processing, so the
+   `#` begins a word on the joined line and drops the rest of the command.
+   `-DENABLE_FEX_ALLOCATOR=ON` *and* `-DTUNE_CPU=none` were both silently never
+   passed; `TUNE_CPU` went back to `native`, FEX's probe opened `/proc/cpuinfo`
+   on macOS, and the configure died 20 minutes in. `bash -n` passes it, because
+   it is valid syntax. `tools/check_shell_continuations.py` now catches it in
+   twenty seconds and the verify job runs it.
+
+3. **I trusted `bash -n` as a semantic check.** Twice. It only ever means "this
+   parses", and both of the defects above parse perfectly.
+
+### The block, and what it needs
+
+Every GitHub *write* now returns
+
+    403  "At least one email address must be verified to do that."
+
+and `git push` says `remote: You must verify your email address.` Reads are
+unaffected, and earlier pushes in the same session succeeded, so this appeared
+partway through. The account `sheltonsilas` has no verified email address. It
+cannot be worked around from here and no amount of retrying will change it.
+
+**A human has to open https://github.com/settings/emails and click the
+verification link for `sheltonsilas@gmail.com`.**
+
+Until then the work sits in two local commits, `52b154e` and `66707f2`, on top
+of the pushed `b650b93`. `build/ci/overnight/retry-push.sh` (scratch, git-
+ignored) is running detached: every two minutes it probes write access, and the
+moment it opens it pushes the branch, then launches the build driver so the run
+is watched and the IPAs are collected. Nothing else needs doing.
+
+Also verified while blocked, since each of these would have cost a run:
+`Madeira.app` is the product name, so the IPA packaging step's `find` will match;
+the xcodebuild step passes no `-derivedDataPath`, so the default
+`~/Library/Developer/Xcode/DerivedData` is where it looks; and the publish job's
+gate is now `github.event_name != 'pull_request'`, where it used to compare
+against a default branch this repository never builds from.
+
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
 file that is not there". It is only the Swift in the app target, which has now
