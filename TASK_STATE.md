@@ -16,7 +16,7 @@ work session and before every major decision.
 | **0. GitHub access + MCP** | Fork created and public. Token minted and working. **MCP itself could not be registered: this Freebuff build has no MCP client** (`grep -rl mcpServers` over the Freebuff source returns nothing). Used the GitHub REST API directly instead, which achieves the same outcomes. |
 | **1. Fork + read + research** | **Done.** Fork at `sheltonsilas/Madeira`. Repo read. Architecture summary in §2. iOS 27 JIT research done — see the important negative finding in §3. |
 | **2. Two variants** | **Partially done, and the split is not 50/50.** Variant A's browser and installer flow are written. Section 6 (embedded StikDebug) turns out to be **already satisfied upstream**, so that was wiring, not new code. Variant B is a documented architecture plus a manager model, because the emulator itself cannot be written here. iPad input: the model was added; upstream already has the hard parts. |
-| **3. CI + IPA** | Workflow written and wired, and the entire native chain now runs on GitHub's macOS runners — the Wine unix side, ntdll/Win32u/libwineserver, the arm64ec PE farm, and DXMT's 87 objects. **No IPA has been published yet**; the first full `build.yml` run died in `dxmt-ios/combine.sh` on a path the script itself invented (fixed), and the chain was re-dispatched from `f9b0d3e`. See §5 and §9f. |
+| **3. CI + IPA** | **DONE.** Two unsigned IPAs are published: run `37495509689` at commit `b30d72d` went green on all four jobs (verify, windows, linux, publish) and released **`build-70`**. Both variants link, package and publish; the SideStore `source.json` is attached and every URL in it answers 200. The native chain (Wine unix side, ntdll/Win32u/libwineserver, the arm64ec PE farm, DXMT's 87 objects, FEX) builds on GitHub's macOS runners. See §9h. |
 | **4. Guide** | Done. `GUIDE.md`. |
 
 **The single most important thing to know:** the four submodules are NOT missing.
@@ -128,9 +128,14 @@ in `StikJITHelper.swift`: scheme `stikdebug`, host `enable-jit`, carrying
 
 ---
 
-## 5. WHY NO IPA WAS BUILT (yet) — updated with what CI has proven
+## 5. WHAT CI PROVED BEFORE THE FIRST IPA (historical — the IPA exists, see §9h)
 
-Not claimed, and not faked. What has now been **verified by a real run**, not
+An IPA **is** now published: release `build-70`, from run `37495509689` at
+`b30d72d`. This section is kept because it records what each earlier run
+established, which is what made the last two failures diagnosable in minutes
+instead of hours.
+
+Not claimed, and not faked. What has been **verified by a real run**, not
 assumed:
 
 - `Confirm the submodules resolved` **PASSED** on both matrix jobs. A recursive
@@ -160,9 +165,10 @@ its own toolchain, so the workflow substitutes a symlink farm
 `cmake -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64
 -DCMAKE_OSX_SYSROOT=iphoneos`, which Xcode's clang satisfies.
 
-**UNTESTED:** Xcode's LLVM is not upstream's 15.0.7, so the dxmt-ios step may
-still fail on version skew. If it does, the correct fix is a real LLVM-for-iOS
-build on hardware with enough disk and RAM, not a better symlink.
+**Resolved:** Xcode's LLVM is not upstream's 15.0.7, and the worry was that
+`dxmt-ios` would fail on version skew. It did not: DXMT's 87 objects compile and
+the app links (§9h). The substitution stands. A real LLVM-for-iOS build remains
+the better answer if a future DXMT bump actually needs LLVM 15's headers.
 
 **Corrected in session 6 (§9f):** the headers-only substitution above is enough
 to *compile* DXMT and not enough to *link* the app. `dxmt-ios/combine.sh` merges
@@ -896,6 +902,83 @@ For section 5, this changes the honest reason no IPA exists. It is no longer
 file that is not there". It is only the Swift in the app target, which has now
 been compiled exactly once. Expect a second generation of these errors; that is
 progress, not regression.
+
+## 9h. THE FIRST IPA — run 37495509689, release build-70
+
+The account email was verified at 21:22 IST on 2026-10-06; `retry-push.sh`
+pushed on attempt 101 (`b650b93..d94a4b4`) and launched the driver, which
+dispatched the run below.
+
+**What that run proved, in order:**
+
+- `verify-jit-invariants` green, including the new `No comment sits inside a
+  continued shell command` check — the guard for §9g mistake 2.
+- Steps 3–11 green: toolchain caches hit, FEX rebuilt from scratch.
+- Step 12 `Build the native pieces` green **for the first time** on both
+  variants.
+- Step 13 `Build the app` failed — **but not on symbols. The link succeeded.**
+  All ten family-3 symbols from run 37415160482 were gone. `ios_fex_host_bridge.c`
+  did its job, and no undefined symbol has appeared in a Madeira run since.
+
+What stopped it was a defect nobody could have seen, because no run had ever
+reached it:
+
+```
+error: bundled LICENSE-MADEIRA-GPL-3.0.txt is missing or stale; run build/stage-licenses.sh
+```
+
+`app/Madeira/licenses` is a bundled folder reference, but the two Madeira
+copies inside it are generated from `COPYING` / `LICENSE-EXCEPTION.md` and are
+**gitignored** (`.gitignore` lines 151–153), so a fresh checkout has neither.
+The only caller of `build/stage-licenses.sh` is
+`build/madeira-d3d12/fetch-converter.sh`, and because `libmetalirconverter.dylib`
+is committed, that script never runs on a runner. Fixed in `b30d72d` by
+staging the copies in the workflow immediately before xcodebuild — which keeps
+the check honest, since a genuinely stale copy still fails it.
+
+**Run 37495509689 at `b30d72d`: all four jobs green.** Release
+https://github.com/sheltonsilas/Madeira/releases/tag/build-70:
+
+| asset | bytes |
+|---|---|
+| `Madeira-windows-unsigned.ipa` | 90,495,480 |
+| `Madeira-linux-unsigned.ipa` | 90,495,574 |
+| `source.json` | 3,155 |
+| `icon.png`, `icon-windows.png`, `icon-linux.png` | 429,496 each |
+
+Verified locally after downloading both IPAs, rather than trusting the job
+summary:
+
+- Both unpack to `Payload/Madeira.app` with `CFBundleExecutable = Madeira` and a
+  71,984-byte `Payload/Madeira.app/Madeira` binary present.
+- **The bundle IDs differ**: `com.willfaust.madeora` vs
+  `com.willfaust.madeora.linux`. The variant flag therefore produces two
+  genuinely different apps — the earlier fear that every run built the Windows
+  variant twice is disproved.
+- `PlugIns/MadeiraJITHelper.appex`, `Frameworks/StikJIT.framework`, and both
+  `licenses/LICENSE-MADEIRA-GPL-3.0.txt` and `LICENSE-MADEIRA-EXCEPTION.txt` are
+  all inside the bundle.
+- Every URL in `source.json` (both IPA downloads, all three icons) answers
+  **200**.
+
+A second defect was found the same way and fixed the same day:
+`tools/make_source.py` writes `iconURL` as `icon.png` / `icon-windows.png` /
+`icon-linux.png` inside the release, and nothing uploaded them — the SideStore
+source shipped with three broken images. The publish job now attaches them
+(three copies of the committed 1024px app icon, deliberately not `gh`'s
+`file#name` rename, so a cosmetic step cannot fail on a syntax detail), and the
+three were backfilled onto `build-70` by hand so the already-published source
+resolves today.
+
+**Honest limits, unchanged:** none of this has run on a device. iOS 27 will not
+JIT a bundle that is not on SideStore's allowlist (§3), so the first real test
+is an iPad with StikDebug. Also worth reconciling one day: the project-level
+`IPHONEOS_DEPLOYMENT_TARGET` is **17.0** (only `MadeiraJITHelper` sets 26.0), so
+the built `Info.plist` says `MinimumOSVersion = 17.0`, while `source.json`
+advertises `minOSVersion` 26.0. The mismatch is in the safe direction — SideStore
+simply will not offer it below 26 — but it is not what the project file claims.
+
+---
 
 ## 10. NEXT ACTIONS FOR A HUMAN
 

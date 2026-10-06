@@ -166,3 +166,6 @@ app/Madeira/arm64ec-windows/dock-notices.txt
 # script itself (build/ci/overnight-loop.sh) IS tracked; this directory is only
 # its scratch space.
 build/ci/overnight/
+
+# IPAs downloaded from a published release (build outputs, never sources)
+ipas/

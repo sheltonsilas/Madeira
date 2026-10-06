@@ -528,6 +528,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ env.tag }}" dist/source.json
 
+      - name: Attach the app icons the source points at
+        # tools/make_source.py writes iconURL as icon.png, icon-windows.png and
+        # icon-linux.png inside this release, but nothing uploaded them, so every
+        # SideStore source showed a broken image. The repository carries one
+        # 1024px app icon; publish it under each name the source asks for.
+        # Three copies rather than gh's file#name rename: this step is cosmetic,
+        # so it must not depend on a gh syntax detail to keep the release green.
+        # Non-fatal for the same reason: a missing image must never be able to
+        # turn a run that already published both IPAs red.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          icons=$(mktemp -d)
+          src="app/Madeira/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+          for n in icon.png icon-windows.png icon-linux.png; do cp "$src" "$icons/$n"; done
+          if ! gh release upload "${{ env.tag }}" "$icons/icon.png" "$icons/icon-windows.png" "$icons/icon-linux.png" --clobber; then
+            echo "::warning::the icons were not attached; source.json will show broken images"
+          fi
+
       - name: Where to find it
         run: |
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/${{ env.tag }}"
