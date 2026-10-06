@@ -694,6 +694,50 @@ Fixed this session, in the order they were found:
     never asked for the archive, so the linker then reported the five symbols
     undefined. Target added.
 
+## 9e. WHAT THE LINKER STILL WANTS (run 37411870382, fully enumerated)
+
+With the five `Allocator` symbols accounted for, the run reported exactly
+eighteen undefined symbols in three families. I mapped all eighteen in the
+tree; the honest state is that the first family is fixed and the other two
+are **not yet understood well enough to change anything**.
+
+1. `FEXCore::Allocator::{malloc,free,memalign,aligned_alloc,aligned_free}` --
+   fixed by building `JemallocLibs` (above).
+
+2. `_bcrypt_unix_call_funcs`, `_bcrypt_unix_call_wow64_funcs`, and the same
+   pair for `secur32` -- **fixed**. Both tables are emitted by the sources and
+   both objects compile "OK" and are in the `ar rcs` list, so my first two
+   theories were both wrong: not a missing shim, and not archive ordering
+   (I checked -- the other six unixlib tables resolve out of the same archive).
+   They are emitted *conditionally*. `wine/dlls/bcrypt/gnutls.c` gates its
+   entire body, `__wine_unix_call_funcs` included, behind
+   `HAVE_GNUTLS_CIPHER_INIT` from line 27; `secur32/schannel_gnutls.c` does the
+   same with `SONAME_LIBGNUTLS`. Wine's own configure defines both on a Unix
+   build and this one never did, so those two objects were *empty* while
+   ws2_32/nsi/dwrite/dnsapi/crypt32 -- which have no such gate -- linked fine.
+   Both macros are now passed. This is the lesson worth keeping: "OK" in that
+   compile step means the empty translation unit compiled, so a whole-file gate
+   is invisible until the link, and the compile log can never tell you.
+
+3. `_IosMonoResolveRW`, `_IosSubfloorToReal`, `_ios_fex_band_base`,
+   `_ios_fex_band_end`, `_ios_fex_mono_*` and `_rpm_cas_snapshot_take`.
+   These are defined in the FEX *guest module* sources
+   (`Source/Windows/ARM64EC/IosJitAlias.cpp`, `Source/Windows/WOW64/
+   IosMonoBridge.cpp`) and in `External/rpmalloc/rpmalloc.c` -- none of
+   which is compiled into `libFEXCore.a`. `build.yml` builds only
+   `fex-ios` (the host library); `fex-wow64` and `fex-arm64ec` build the
+   guest modules as DLLs shipped into the prefix as `xtajit.dll` /
+   `xtajit64.dll`. So FEXCore's host build is calling across a module
+   boundary that does not exist in a single-process iOS link. This is an
+   architecture question, not a typo, and I am not going to guess at it.
+
+Also worth recording because it cost me a wrong turn: the submodule gitlink
+in HEAD says FEX `08aca96`, but the FEX worktree here is on `1adb337`
+(`heads/ios-port-2607`), and `External/rpmalloc/` exists at `08aca96` but
+not at `1adb337`. CI checks out the recorded gitlink, so CI's tree is not
+the tree I can read. Any future fix for family 3 has to be reasoned about
+against `git show 08aca96:<path>`, not against the worktree.
+
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
 file that is not there". It is only the Swift in the app target, which has now
