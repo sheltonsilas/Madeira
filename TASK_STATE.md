@@ -999,7 +999,10 @@ simply will not offer it below 26 — but it is not what the project file claims
    complete, but a *stage* `xcodebuild` run bundles only what is tracked. If a
    fresh clone should build without the PE step, commit them — that is a
    deliberate follow-up, not an oversight to fix blindly.
-4. Delete `~/.madeira-gh-token` when finished, and revoke the PAT in
-   GitHub → Settings → Developer settings → Personal access tokens.
-   It is deliberately still on disk while a run is in flight: the driver reads
-   it on every poll.
+4. **Revoke the PAT — this is the one action only a human can do.** The local
+   copy, `~/.madeira-gh-token`, was deleted on 2026-10-06 as soon as release
+   `build-70` was verified, so nothing on this machine can push any more. That
+   does **not** revoke it: GitHub keeps honouring a token whose file is gone.
+   Revoke it at GitHub → Settings → Developer settings → Personal access
+   tokens (classic). It was minted with `repo` + `workflow` scope and a 30-day
+   expiry, and until it is revoked it can push to the fork.
