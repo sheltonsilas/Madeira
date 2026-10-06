@@ -115,13 +115,26 @@ compile_one "$BUILD_DIR/../madsync/madsync.c" "madsync"   # ml1058: userspace nt
 echo "=== Building crypto/network unixlibs ==="
 "$CRYPTO_DIR/gen_gnutls_symtab.sh" > /dev/null
 compile_one "$CRYPTO_DIR/gnutls_symtab_ios.c" "gnutls_symtab_ios"
+# HAVE_GNUTLS_CIPHER_INIT and SONAME_LIBGNUTLS are what Wine own configure would
+# define for a Unix build. Both of these files gate their ENTIRE body -- including
+# __wine_unix_call_funcs, the table virtual_ios.c looks up by name -- behind them,
+# so without them the compile "succeeds" and emits an object containing no table.
+# That is why run 37411870382 reported four undefined symbols (_bcrypt_unix_call_funcs,
+# _bcrypt_unix_call_wow64_funcs, and the secur32 pair) while every other unixlib table in
+# the same archive resolved: ws2_32/nsi/dwrite/dnsapi/crypt32 have no such gate. The
+# link error pointed at a missing definition and the compile log pointed nowhere,
+# because OK here means the empty translation unit compiled.
+# The value only has to contain "gnutls": ios_gnutls_dlopen matches on
+# strstr(name, "gnutls") and never reaches a real dlopen for it.
 compile_unixlib "$WINE_SRC/dlls/ws2_32/unixlib.c" "ws2_32_unixlib" "ws2_32" \
     -I"$WINE_SRC/dlls/ws2_32"
 compile_unixlib "$WINE_SRC/dlls/bcrypt/gnutls.c" "bcrypt_unixlib" "bcrypt" \
     -I"$WINE_SRC/dlls/bcrypt" -I"$GNUTLS_PREFIX/include" \
+    -DHAVE_GNUTLS_CIPHER_INIT=1 -DSONAME_LIBGNUTLS='"libgnutls-ios.dylib"' \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
 compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "secur32" \
     -I"$WINE_SRC/dlls/secur32" -I"$GNUTLS_PREFIX/include" \
+    -DHAVE_GNUTLS_CIPHER_INIT=1 -DSONAME_LIBGNUTLS='"libgnutls-ios.dylib"' \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
 # iOS-Madeira ml494 (#61 text wall): dwrite had NO unixlib, so every
 # __wine_unix_call from dwrite.dll failed and get_glyph_bbox never ran —
