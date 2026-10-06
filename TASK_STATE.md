@@ -738,6 +738,72 @@ not at `1adb337`. CI checks out the recorded gitlink, so CI's tree is not
 the tree I can read. Any future fix for family 3 has to be reasoned about
 against `git show 08aca96:<path>`, not against the worktree.
 
+## 9f. FAMILY 3, FULLY TRACED (investigation only -- nothing changed)
+
+Run 37415160482 confirmed the first two families are fixed: the undefined list
+went from eighteen symbols to ten, with every `FEXCore::Allocator` symbol and
+all four `bcrypt`/`secur32` table symbols gone. The ten that remain are two
+unrelated gaps, and they have different owners. Neither has been changed.
+
+### 3a. rpmalloc is never compiled (3 symbols)
+
+`ios_fex_band_base`, `ios_fex_band_end`, `rpm_cas_snapshot_take`.
+
+They are defined in the *nested* submodule `FEX/External/rpmalloc`, at
+`rpmalloc/rpmalloc.c` lines 884, 889 and 2140 (repo `willfaust/rpmalloc`,
+branch `ios-madeira`, pinned to `812c2b9`). That submodule is compiled only
+under `if (ENABLE_FEX_ALLOCATOR)` in `FEX/CMakeLists.txt:366`, and
+`build/fex-ios/build.sh` passes `-DENABLE_FEX_ALLOCATOR=OFF` -- while the
+sibling `build/fex-arm64ec/build.sh` passes `ON`. `Core.cpp:1971` calls
+`rpm_cas_snapshot_take` with no guard, and `AllocatorHooks.h`/`Allocator.cpp`
+read `ios_fex_band_base`.
+
+The file says the intent outright, at line 900: they live there "purely so that
+every FEX binary that links FEXCore has" them. So the invariant FEX is written
+to is *links FEXCore => links rpmalloc*, and the OFF setting breaks it.
+
+This one needs **no FEX change at all**. It is three files in this repo:
+pass `ON` in `build/fex-ios/build.sh`; add `librpmalloc.a` to the app's
+Frameworks phase (`JemallocLibs` declares `target_link_libraries(... PUBLIC
+rpmalloc)`, but a static lib's transitive dependency does not survive into
+Xcode's link line); and make sure the nested submodule is actually present.
+Note this is *not* a replacement for building `JemallocLibs` -- that is still
+required, and with `ON` it simply routes through rpmalloc instead of
+`posix_memalign`.
+
+### 3b. The guest-module bridge is not in the host link (7 symbols)
+
+`IosMonoResolveRW`, `IosSubfloorToReal`, and the five `ios_fex_mono_*`.
+
+They are defined in `FEX/Source/Windows/WOW64/IosMonoBridge.cpp` and
+`FEX/Source/Windows/ARM64EC/IosJitAlias.cpp`. FEX resolves them by linking the
+module and FEXCore into *one* image: both module `CMakeLists.txt` files list
+`$<TARGET_OBJECTS:FEXCore_object>`, and `FEXCore_object` is real -- created by
+`AddObject(${PROJECT_NAME}_object)` at `FEXCore/Source/CMakeLists.txt:271`,
+with `AddLibrary` at 279 wrapping it into the archive. So the module and
+FEXCore share a link by construction.
+
+`build/fex-ios/build.sh` builds `FEXCore`, `FEXCore_Base` and `JemallocLibs`
+only, so the app receives `FEXCore_object` with no module beside it. The app
+*does* carry `xtajit.dll` and `xtajit64.dll` (the built modules, in
+`aarch64-windows/` and `arm64ec-windows/`), but those are PE images loaded at
+runtime and cannot satisfy a static link.
+
+Three ways out, and they are not equivalent:
+  1. Compile the bridge sources into a host-side archive the app links. Real
+     definitions, smallest blast radius, all inside this repo.
+  2. Build and link the actual module target into the app.
+  3. Stop the host build from referencing them at all -- but `FEX_IOS_HOST`
+     currently means two different things (genuinely iOS-only host code, and
+     guest-module-only code), so this needs a *new* macro in FEX, which is a
+     FEX change.
+
+The trap in 1 and 2: `IosMonoBridge.cpp` and `IosJitAlias.cpp` define the *same*
+symbol names, so exactly one can be linked. That choice is really a statement
+about which guests the host supports -- WOW64 (32-bit) or ARM64EC (x86-64) --
+and Variant A is the x86-64 one, which points at `IosJitAlias.cpp`. That
+decision is why this half is left alone pending review.
+
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
 file that is not there". It is only the Swift in the app target, which has now
