@@ -410,6 +410,16 @@ jobs:
             bash "build/$s"
           done
 
+      - name: Stage the generated licence copies
+        # app/Madeira/licenses is a bundled folder reference, but the two
+        # Madeira copies inside it are generated from COPYING and
+        # LICENSE-EXCEPTION.md and are deliberately gitignored, so a fresh
+        # checkout contains neither. The converter dylib is committed, so
+        # build/madeira-d3d12/fetch-converter.sh -- the only caller of
+        # build/stage-licenses.sh -- never runs on a runner, and the
+        # 'Sign bundled dylibs' phase then fails its staleness check.
+        run: bash build/stage-licenses.sh
+
       - name: Build the app (Debug - the only configuration that runs)
         run: |
           set -euo pipefail
