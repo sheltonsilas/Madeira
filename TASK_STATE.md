@@ -653,6 +653,19 @@ Fixed this session, in the order they were found:
     request", which is the guard a fork actually needs, and it is the difference
     between an IPA in a download table and an IPA in a folder of run logs.
 
+  * The next run died in step 12 the same way -- curl's exit 28 against
+    ftp.gnu.org -- and its log said how it got there. Homebrew had installed
+    bison 3.8.2 successfully and reported it as *keg-only*, so it was not
+    symlinked into `/opt/homebrew/bin`, which is the only directory
+    `ensure-bison.sh` added to PATH. The version check therefore kept running
+    macOS's bison 2.3, judged the install a failure, and fell through to a
+    source build from a host the runner cannot open a connection to: six
+    attempts, two runs. `brew --prefix bison` is the fix -- it is what
+    Homebrew's own keg-only message recommends -- and the source path now tries
+    two mirrors before ftp.gnu.org, with the pinned SHA-256 deciding whether
+    what arrived is what was asked for. Verified against a stub Homebrew that
+    reproduces the keg-only case.
+
 For section 5, this changes the honest reason no IPA exists. It is no longer
 "the native chain does not build", and no longer "the project file points at a
 file that is not there". It is only the Swift in the app target, which has now
