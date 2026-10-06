@@ -18,6 +18,8 @@
 #
 # A target is either a stage name accepted by .github/workflows/stage.yml, or the
 # word `build`, which dispatches the full build.yml run -- both variants, the IPAs
+# and the published release -- and then reports where they are. The single word
+# `chain` walks every stage that is not green at this commit, then `build`.
 # and the published release -- and then reports where they are.
 #
 # Run it detached; build/ci/launch-overnight.sh does that and also stops the
@@ -28,7 +30,7 @@
 #   state       "<target> <sha>" per green target, so a restart does not redo work
 #   inflight    "<target> <run_id> <sha>" while a run is being waited on
 #   heartbeat   rewritten every poll, so a watcher can see it is alive
-#   <target>-<run>.log, NEEDS_FIX.md, IPA-READY.md, ipas/
+#   <target>-<run>.log, NEEDS_FIX.md, IPA-READY.md
 set -uo pipefail
 
 if [ "${#@}" -eq 0 ]; then
@@ -42,6 +44,7 @@ DIR="$R/build/ci/overnight"
 STATE="$DIR/state"
 INFLIGHT="$DIR/inflight"
 HEARTBEAT="$DIR/heartbeat"
+NEEDS_FIX_MARK="$DIR/NEEDS_FIX.md.tmp"
 LOCK="$DIR/driver.pid"
 TOKEN_FILE="$HOME/.madeira-gh-token"
 BRANCH="feature/two-variants-browser-and-linux"
@@ -95,7 +98,7 @@ fi
 log "driving ${TARGETS[*]} at ${SHA:0:7}"
 
 # --- dispatch -----------------------------------------------------------------
-dispatch() {   # dispatch <workflow file> [json input object]
+dispatch () {   # dispatch <workflow file> [json input object]
     local wf="$1" inputs="${2:-{\}}" code
     for i in 1 2 3 4 5; do
         code=$(curl -sL -o /dev/null -w "%{http_code}" -X POST \
@@ -180,8 +183,11 @@ wait_for_run() {   # wait_for_run <run_id> -> prints the conclusion on stdout
     done
 }
 
+RUN_LOGS=()
+
 save_job_logs() {   # save_job_logs <run_id> <label>
     local run="$1" label="$2" id
+    RUN_LOGS=()
     for id in $(api "$API/actions/runs/$run/jobs" | python3 -c "
 import json,sys
 js=json.load(sys.stdin)
@@ -191,12 +197,31 @@ for j in js.get('jobs',[]):
         local out="$DIR/$label-$run-$id.log"
         api "$API/actions/jobs/$id/logs" -o "$out"
         if [ -s "$out" ]; then
+            RUN_LOGS+=("$out")
             log "log saved: $out"
             first_errors "$out"
         else
             rm -f "$out"
         fi
     done
+}
+
+# A failure that is not about the code: a download, a DNS lookup, a starved
+# runner. One such run cost a cycle tonight -- the bison bottle download failed
+# and the run died in a precondition step, which the driver recorded as "the
+# stage is broken". Retrying those once is worth it; retrying anything else is
+# not, because a compile error retried is still a compile error, and pretending
+# otherwise is how a real fault gets buried under three identical logs.
+infra_flake() {
+    local f hit=0
+    for f in "${RUN_LOGS[@]:-}"; do
+        [ -f "$f" ] || continue
+        if grep -aqiE 'curl: \(|Failed to connect|Could not resolve|Connection reset|Operation timed out|remote end hung up|502 Bad Gateway|503 Service|429 Too Many|Rate limit|Network is unreachable|Resource temporarily unavailable' "$f"; then
+            hit=1
+            log "  infrastructure signature in $(basename "$f")"
+        fi
+    done
+    [ "$hit" = 1 ]
 }
 
 # The first real error is the only part of a 3000-line log worth reading before
@@ -218,7 +243,7 @@ PY
 
 run_url() { echo "https://github.com/$REPO/actions/runs/$1"; }
 
-needs_fix() {   # needs_fix <target> <run> <log-ish>
+needs_fix() {   # needs_fix <target> <run>
     {
         echo "# Needs a fix: \`$1\`"
         echo
@@ -226,15 +251,36 @@ needs_fix() {   # needs_fix <target> <run> <log-ish>
         echo "- run: $(run_url "$2")"
         echo "- logs: \`build/ci/overnight/\`"
         echo
-        echo "The driver stopped here on purpose: deciding what a compile error means"
-        echo "needs judgement, and re-running an unfixed stage only burns the night."
-        echo "Read the log above the first error and fix that one thing."
-    } > "$DIR/NEEDS_FIX.md"
+        if [ "${RETRIED_FOR_INFRA:-0}" = "1" ]; then
+            echo "The first failure of this target looked like infrastructure, so it was"
+            echo "retried once. This note is from the retry, which failed the same way --"
+            echo "so read it as a real defect now."
+        else
+            echo "The driver stopped here on purpose: deciding what a compile error means"
+            echo "needs judgement, and re-running an unfixed stage only burns the night."
+            echo "Read the log above the first error and fix that one thing."
+        fi
+    } > "$NEEDS_FIX_MARK"
+    mv -f "$NEEDS_FIX_MARK" "$DIR/NEEDS_FIX.md"
     log "wrote $DIR/NEEDS_FIX.md"
 }
 
 # --- the two kinds of target ---------------------------------------------------
-run_stage() {   # run_stage <stage> -> 0 green, 1 failed
+run_stage () {   # run_stage <stage> -> 0 green, 1 failed (one retry if it was infrastructure)
+    local attempt
+    for attempt in 1 2; do
+        if stage_once "$1"; then return 0; fi
+        if [ "$attempt" = 1 ] && infra_flake; then
+            log "retrying $1 once: that failure was infrastructure, not code"
+            rm -f "$NEEDS_FIX_MARK"
+            RETRIED_FOR_INFRA=1
+            continue
+        fi
+        return 1
+    done
+}
+
+stage_once() {
     local stage="$1" run status conclusion
     local inflight_target inflight_run inflight_sha
     read -r inflight_target inflight_run inflight_sha < "$INFLIGHT" 2>/dev/null || true
@@ -276,7 +322,21 @@ run_stage() {   # run_stage <stage> -> 0 green, 1 failed
     return 1
 }
 
-run_build() {   # run_build -> 0 when the release with the IPAs exists
+run_build () {   # run_build -> 0 when the release with the IPAs exists
+    local attempt
+    for attempt in 1 2; do
+        if build_once; then return 0; fi
+        if [ "$attempt" = 1 ] && infra_flake; then
+            log "retrying the build once: that failure was infrastructure, not code"
+            rm -f "$NEEDS_FIX_MARK"
+            RETRIED_FOR_INFRA=1
+            continue
+        fi
+        return 1
+    done
+}
+
+build_once() {
     local run status conclusion number tag candidate_sha
 
     # Adopt a run that is already in flight before dispatching anything. Two
@@ -381,7 +441,53 @@ PY
     return 1
 }
 
+# --- nightly chain ----------------------------------------------------------
+# Walks the stages that are not yet green at this commit, then dispatches the
+# full build.yml so the IPAs come out of the last run.  Each stage is persisted
+# into STATE once it is green, so a resumed invocation picks up where the
+# previous one stopped.
+_run_chained() {
+    local todo=() s
+    for s in wine-unix wine-pe wine-pe-universal dxmt-ios rppairing-ios xcodebuild build; do
+        case "$s" in
+        dxmt-ios)
+            if grep -qE "^dxmt-ios( |/)" "$STATE" 2>/dev/null; then
+                log "[chain] dxmt-ios already green; skip"
+                continue
+            fi
+            ;;
+        *)
+            if grep -q "^$s " "$STATE" 2>/dev/null; then
+                log "[chain] $s already green; skip"
+                continue
+            fi
+            ;;
+        esac
+        todo+=("$s")
+    done
+
+    if [ ${#todo[@]} -eq 0 ]; then
+        log "[chain] every stage is already green; go straight to build.yml"
+    fi
+
+    for s in "${todo[@]}"; do
+        log "[chain] ---- $s ----"
+        if [ "$s" = "build" ]; then
+            run_build || return 1
+        else
+            run_stage "$s" || return 1
+        fi
+    done
+    return 0
+}
 # --- go ------------------------------------------------------------------------
+if [ "${TARGETS[0]:-}" = "chain" ]; then
+    log "chain mode: walking every stage not yet green at ${SHA:0:7}"
+    _run_chained || die "stopping: a target in the chain needs a fix before the next one can start"
+    log "the chain is complete at ${SHA:0:7}"
+    exit 0
+fi
+
 for target in "${TARGETS[@]}"; do
     if grep -qx "$target $SHA" "$STATE" 2>/dev/null; then
         log "skip $target: already green at ${SHA:0:7}"

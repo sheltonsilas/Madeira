@@ -167,13 +167,11 @@ final class JitManager: ObservableObject {
     /// also has EntitlementChecker.swift for the full matrix; this is the one
     /// bit that gates JIT.
     var debuggableSignature: Bool {
-        if let task = SecTaskCreateFromSelf(nil) {
-            let value = SecTaskCopyValueForEntitlement(
-                task, "get-task-allow" as CFString, nil
-            ) as? Bool
-            return value ?? false
-        }
-        return false
+        // The iOS SDK does not declare SecTaskCreateFromSelf or
+        // SecTaskCopyValueForEntitlement: EntitlementChecker.swift binds those
+        // two symbols itself and exposes this. Calling that beats a second copy
+        // of the same declaration, which is what the compiler objected to here.
+        checkAppEntitlement("get-task-allow")
     }
 
     /// The JIT helper app extension has to be installed next to us, because a

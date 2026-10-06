@@ -55,8 +55,11 @@ enum WindowsBrowser {
 }
 
 /// One downloaded file, and what can be done with it.
-struct BrowserDownload: Identifiable, Hashable {
-    let id = UUID()
+struct BrowserDownload: Identifiable, Hashable, Codable {
+    /// A var with a default rather than a let: the sidecar is JSON, and Swift
+    /// excludes an immutable property that already has a value from decoding,
+    /// so the shelf would come back with no usable id.
+    var id = UUID()
     var filename: String
     var sourceURL: URL
     /// Absolute path inside the iOS container where the file landed.
@@ -149,7 +152,7 @@ struct MadeiraBrowserView: View {
                 // the shelf first is friction for no benefit. This was wired but
                 // never set, so the prompt could not fire.
                 if download.isInstaller && download.finished {
-                    pendingInstall = download.id
+                    pendingInstall = download
                 }
             }
             .navigationTitle("Browser")
@@ -223,7 +226,7 @@ private struct BrowserWebView: UIViewRepresentable {
 
         private func attach(_ download: WKDownload) {
             let destination = DownloadStore.directory
-                .appendingPathComponent(download.originalRequest.url?.lastPathComponent ?? "download")
+                .appendingPathComponent(download.originalRequest?.url?.lastPathComponent ?? "download")
             download.delegate = DownloadDelegate(destination: destination) { [weak self] finished in
                 Task { @MainActor in self?.parent.onDownload(finished) }
             }
@@ -251,7 +254,7 @@ private final class DownloadDelegate: NSObject, WKDownloadDelegate {
     func downloadDidFinish(_ download: WKDownload) {
         let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
         completion(BrowserDownload(filename: destination.lastPathComponent,
-                                   sourceURL: download.originalRequest.url ?? URL(fileURLWithPath: "/"),
+                                   sourceURL: download.originalRequest?.url ?? URL(fileURLWithPath: "/"),
                                    localURL: destination,
                                    byteCount: size ?? 0,
                                    finished: true))
@@ -259,7 +262,7 @@ private final class DownloadDelegate: NSObject, WKDownloadDelegate {
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         completion(BrowserDownload(filename: destination.lastPathComponent,
-                                   sourceURL: download.originalRequest.url ?? URL(fileURLWithPath: "/"),
+                                   sourceURL: download.originalRequest?.url ?? URL(fileURLWithPath: "/"),
                                    localURL: destination,
                                    finished: false,
                                    failure: error.localizedDescription))

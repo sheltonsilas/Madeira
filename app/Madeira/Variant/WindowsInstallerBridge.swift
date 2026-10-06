@@ -29,7 +29,8 @@ final class WindowsInstallerBridge: ObservableObject {
 
     /// Folders inside drive_c that a Windows installer can write a program to.
     /// Order matters: the first hit wins if a program exists in two of them.
-    private static let programRoots = [
+    /// Not private: InstalledAppsStore scans the same folders, and could not.
+    static let programRoots = [
         "Program Files",
         "Program Files (x86)",
         "ProgramData/Microsoft/Windows/Start Menu/Programs",
@@ -57,11 +58,17 @@ final class WindowsInstallerBridge: ObservableObject {
 
         var target = Self.stagedDownloads.appendingPathComponent(download.filename)
         if fm.fileExists(atPath: target.path) {
-            let stem = download.filename.deletingPathExtension
-            let ext = download.filename.pathExtension
+            // String has no deletingPathExtension/pathExtension -- those are
+            // NSString's. pathExtension(of:) above is the helper this file
+            // already uses for exactly this, so use it.
+            let ext = Self.pathExtension(of: download.filename)
+            let stem = ext.isEmpty
+                ? download.filename
+                : String(download.filename.dropLast(ext.count + 1))
             var n = 2
             repeat {
-                target = Self.stagedDownloads.appendingPathComponent("\(stem) (\(n)).\(ext)")
+                let name = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
+                target = Self.stagedDownloads.appendingPathComponent(name)
                 n += 1
             } while fm.fileExists(atPath: target.path)
         }
@@ -125,8 +132,10 @@ final class WindowsInstallerBridge: ObservableObject {
     /// only real concern and we reject arguments containing a double quote.
     func run(relativePath: String, arguments: [String]) {
         guard arguments.allSatisfy({ !$0.contains("\"") }) else { return }
-        setenv("MADEIRA_EXE", ("C:\\" + relativePath.windowsPath).cString, 1)
-        setenv("MADEIRA_ARGS", arguments.joined(separator: " ").cString, 1)
+        // cString(using:) is a method, not a pointer: passing it unapplied is
+        // exactly what the compiler rejected. withCString hands out the pointer.
+        _ = ("C:\\" + relativePath.windowsPath).withCString { setenv("MADEIRA_EXE", $0, 1) }
+        _ = arguments.joined(separator: " ").withCString { setenv("MADEIRA_ARGS", $0, 1) }
         launchHandler?(relativePath)
     }
 
@@ -196,7 +205,7 @@ final class InstalledAppsStore: ObservableObject {
         for root in WindowsInstallerBridge.programRoots {
             let base = LibraryModel.drive.appendingPathComponent(root)
             guard let walker = fm.enumerator(at: base,
-                                             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                                             includingPropertiesForKeys: [URLResourceKey.isRegularFileKey, URLResourceKey.fileSizeKey],
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             for case let url as URL in walker {
                 // Not Self.pathExtension: Self here is InstalledAppsStore, which
@@ -204,7 +213,7 @@ final class InstalledAppsStore: ObservableObject {
                 guard WindowsInstallerBridge.pathExtension(of: url.lastPathComponent) == "exe" else { continue }
                 let relative = url.path.replacingOccurrences(of: LibraryModel.drive.path + "/", with: "")
                 guard !seen.insert(relative).inserted else { continue }
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                let size = (try? url.resourceValues(forKeys: [URLResourceKey.fileSizeKey]).fileSize).map(Int64.init) ?? 0
                 results.append(InstalledApp(title: url.deletingPathExtension().lastPathComponent,
                                             relativePath: relative,
                                             sizeBytes: size))
