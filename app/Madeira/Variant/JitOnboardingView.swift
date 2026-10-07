@@ -191,12 +191,23 @@ struct JitOnboardingView: View {
                 InterpreterFallbackNotice(isActive: true)
                     .padding(.horizontal, 0)
             }
+            // Read here as well as at the launch gate, so this screen and the
+            // session that follows it are answering the same question of the
+            // same source. It used to be possible for this screen to promise
+            // a fallback that ContentView had no idea had been requested.
+            Label(jit.shouldUseJIT
+                  ? "FEX will compile this session to native code."
+                  : "FEX will not compile this session.",
+                  systemImage: jit.shouldUseJIT ? "bolt.fill" : "bolt.slash.fill")
+                .font(.footnote)
+                .foregroundStyle(jit.shouldUseJIT ? Color.secondary : Color.orange)
         } header: {
             Text("If JIT cannot be enabled")
         } footer: {
-            Text("This is the UTM SE approach: drop the JIT and interpret everything. "
-                 + "It works on any device and needs no setup, but expect large slowdowns. "
-                 + "Turn it off to let FEX use the JIT whenever one is available.")
+            Text("This build of FEX ships only the ARM64 JIT core — no interpreter — so "
+                 + "interpreter-only cannot make a session run without a debugger; it records "
+                 + "the choice and the session will say so instead of failing silently. Turn it "
+                 + "off to let FEX use the JIT whenever one is available.")
         }
     }
 

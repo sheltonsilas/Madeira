@@ -2497,8 +2497,12 @@ struct ContentView: View {
     /// to prepare code pages. Detach happens after Wine finishes + recovery.
     /// `profile` is a library entry whose launch profile applies to this run.
     private func runWineFullSequence(profile: LibraryEntry? = nil) {
-        guard jit_check_debugged() else {
-            logStore.log("JIT not enabled. Press 'Enable JIT' first.", level: .error)
+        // One decision, in JitManager. This guard used to print "Press 'Enable
+        // JIT' first" no matter what, so a user who had explicitly asked for
+        // interpreter-only was told to do the opposite of what they had chosen,
+        // and the setting itself was read nowhere in the repository.
+        if let blocked = JitManager.launchBlocked(debugged: jit_check_debugged()) {
+            logStore.log(blocked, level: .error)
             if profile != nil { LibraryModel.shared.launchFailed() }
             return
         }

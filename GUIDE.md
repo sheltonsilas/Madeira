@@ -8,9 +8,11 @@ variants, because they install the same way.
 >
 > 1. **JIT needs an app that is installed "debuggable".** Apple only lets an app
 >    create executable memory while a debugger is attached. StikDebug (or the
->    app's own built-in helper) attaches that debugger. Without this the app
->    installs and then runs everything in an interpreter — it works, but it is
->    slow.
+>    app's own built-in helper) attaches that debugger. Without it the app
+>    installs and opens, but **no guest session will start**: this build of FEX
+>    is compiled with only the ARM64 JIT core, so there is no interpreter to
+>    fall back to. The "Interpreter only" setting records your choice and then
+>    says so plainly instead of failing silently.
 > 2. **A free Apple ID expires after 7 days.** See the last section, which is
 >    the part most people get wrong.
 

@@ -101,32 +101,45 @@ final class PointerSettings: ObservableObject {
     }
 }
 
-/// The interpreter-only fallback, in the spirit of UTM SE.
+/// Warns that interpreter-only is on, and says what that actually does.
 ///
-/// Without JIT, FEX cannot emit native code, so it interprets. Everything still
-/// works, including 32-bit and 64-bit Windows programs; it is simply much
-/// slower, and the slowdown is worst for exactly the things a Windows game or a
-/// browser does: tight loops and shader compilation.
+/// The text here used to promise the opposite of the truth: "This is a real
+/// mode, not a warning" and "Everything runs, but expect large slowdowns."
+/// Neither holds for this build, and a notice that is confidently wrong is
+/// worse than none, because the user stops looking for the reason. Checked
+/// against the sources rather than assumed:
 ///
-/// This is a real mode, not a warning. The brief asks for it and it is the only
-/// thing that works on a device where no debugger can be attached at all.
+///   * `FEXCore/Source/CMakeLists.txt` compiles only
+///     `Interpreter/Fallbacks/InterpreterFallbacks.cpp` and
+///     `StringCompareFallbacks.cpp`. Those are helper functions the JIT calls
+///     for instructions it does not model; there is no interpreter core.
+///   * `FEXCore/Source/Interface/Core/Core.cpp` gives every thread
+///     `CreateArm64JITCore` unconditionally — no branch selects another
+///     backend.
+///   * `FEX/Source/Windows/ARM64EC/Module.cpp` treats a missing JIT pool as
+///     fatal, and ContentView refuses to start Wine without one.
+///
+/// So with no debugger the guest cannot execute at all. The toggle is kept —
+/// the brief asks for the fallback and it becomes true the day an interpreter
+/// backend is restored — but this notice now says a session will be refused,
+/// which is what the user will find.
 struct InterpreterFallbackNotice: View {
     let isActive: Bool
 
     var body: some View {
         if isActive {
             HStack(spacing: 10) {
-                Image(systemName: "tortoise.fill").foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Interpreter mode - slower").font(.subheadline.weight(.semibold))
-                    Text("JIT is off, so code is interpreted rather than compiled. "
-                         + "Everything runs, but expect large slowdowns in games and video.")
+                    Text("Interpreter mode - unavailable").font(.subheadline.weight(.semibold))
+                    Text("This build of FEX has only the ARM64 JIT core, so there is nothing "
+                         + "to interpret with. Nothing will start while this is on.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding(12)
-            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
         }
     }

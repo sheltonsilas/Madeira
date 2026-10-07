@@ -182,11 +182,54 @@ final class JitManager: ObservableObject {
     /// Shown in Settings so a user can tell "no JIT" from "JIT but no room".
     var availableMemory: UInt64 { jit_available_memory() }
 
-    /// Whether FEX should compile to native code, or interpret.
+    /// Whether FEX will compile to native code.
     ///
-    /// This is the single value the environment layer reads before starting
-    /// FEX. `true` means full speed; `false` means the UTM SE style fallback.
-    var shouldUseJIT: Bool { status.isOn && !forceInterpreter }
+    /// This was documented as "the single value the environment layer reads
+    /// before starting FEX" while a search of the whole repository returned
+    /// only its own definition: the toggle wrote a UserDefaults key and
+    /// nothing ever read it back, so choosing interpreter-only changed
+    /// nothing at all. The decision now lives in `launchBlocked`, which
+    /// ContentView does call at the gate, and this property reads the same
+    /// source so the onboarding screen and the launch gate cannot disagree.
+    ///
+    /// It can be `true` only when a debugger is attached: with no JIT pool the
+    /// ARM64EC module refuses to run rather than corrupt its own writes
+    /// (FEX/Source/Windows/ARM64EC/Module.cpp, "JIT pool writes will corrupt").
+    var shouldUseJIT: Bool { status.isOn && !Self.interpreterOnly }
+
+    /// The user's interpreter-only choice, readable without an instance.
+    ///
+    /// The only JitManager is a @StateObject inside the onboarding screen, so
+    /// a session starting somewhere else cannot reach it. That gap is exactly
+    /// how this setting came to be written and never read.
+    static var interpreterOnly: Bool {
+        UserDefaults.standard.bool(forKey: interpreterKey)
+    }
+
+    /// What stops a session from starting, or nil when it may start.
+    ///
+    /// One place decides, because two places deciding differently is how a
+    /// toggle becomes decorative. ContentView calls this before it allocates
+    /// anything.
+    ///
+    /// The interpreter-only branch is not a performance warning, it is a
+    /// refusal: this build has no interpreter to fall back to. FEXCore compiles
+    /// only the fallback helpers from `Interface/Core/Interpreter/Fallbacks/` —
+    /// there is no interpreter core in `FEXCore/Source/CMakeLists.txt` — and
+    /// `Core.cpp` gives every thread `CreateArm64JITCore` with no branch. So
+    /// without a debugger there is no way to execute a guest instruction, and
+    /// saying "slower but it works" would send the user into a start that never
+    /// starts.
+    static func launchBlocked(debugged: Bool) -> String? {
+        guard !debugged else { return nil }
+        if interpreterOnly {
+            return "Interpreter-only is on, but this build cannot honour it: FEX is compiled "
+                + "with only the ARM64 JIT core, so there is no interpreter to fall back to and "
+                + "no guest runs without a JIT pool. Turn “Interpreter only” off, then tap "
+                + "Enable JIT."
+        }
+        return "JIT not enabled. Press 'Enable JIT' first."
+    }
 
     // MARK: Enabling
 

@@ -169,3 +169,6 @@ build/ci/overnight/
 
 # IPAs downloaded from a published release (build outputs, never sources)
 ipas/
+
+# Python bytecode from running the checks locally
+__pycache__/
