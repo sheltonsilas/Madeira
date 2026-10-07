@@ -37,6 +37,8 @@ FILES = [
     ("PointerMode.swift", "05"),
     ("LinuxEnvironmentStore.swift", "06"),
     ("JitOnboardingView.swift", "07"),
+    ("LinuxEnvironmentPackager.swift", "08"),
+    ("MadeiraTheme.swift", "09"),
 ]
 
 GROUP_ID = "C3000001"
@@ -49,7 +51,19 @@ LAST_FILE_REF = re.compile(r'^\t\tC20000\d\d /\* .*? \*/ = \{isa = PBXFileRefere
 FALLBACK_BUILD_FILE = re.compile(r"^\t\tB1000001 /\* JITSetup\.swift in Sources \*/ = .*$", re.M)
 FALLBACK_FILE_REF = re.compile(r"^\t\tB2000001 /\* JITSetup\.swift \*/ = \{isa = PBXFileReference;.*$", re.M)
 
-GROUP_CHILDREN_ANCHOR = "\t\t\t\tC3000001 /* Variant */,\n"
+# Where new children go: inside the Variant group's own `children` block.
+#
+# This used to be the line `C3000001 /* Variant */,`, which is the group's
+# entry in its PARENT's children list. Replacing after that put every
+# incremental file into the Madeira group instead, where the bare filename
+# resolved to Madeira/<name> and the file was reported missing from the build.
+# The files that were correct were the ones present when the group was first
+# created, because that branch lists them all itself.
+GROUP_CHILDREN_ANCHOR = (
+    "\t\tC3000001 /* Variant */ = {\n"
+    "\t\t\tisa = PBXGroup;\n"
+    "\t\t\tchildren = (\n"
+)
 PARENT_CHILDREN_ANCHOR = "\t\t\t\tB2000040 /* JITPairing.swift */,\n"
 SOURCES_ANCHOR = "\t\t\t\tB1000040 /* JITPairing.swift in Sources */,\n"
 GROUP_SECTION_END = "/* End PBXGroup section */"

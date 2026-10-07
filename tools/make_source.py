@@ -121,7 +121,9 @@ def main() -> int:
             "Two builds from one codebase: Madeira Windows, with a browser and "
             "an installer flow, and Madeira Linux, with an environment manager. "
             "JIT must be enabled separately with StikDebug or the built-in "
-            "helper; without it everything runs interpreted and much slower."
+            "helper; without it the app opens but no guest session can start, "
+            "because this build has only the ARM64 JIT core and no interpreter "
+            "to fall back to."
         ),
         "iconURL": f"{args.base_url}/icon.png",
         "website": "https://github.com/sheltonsilas/Madeira",
