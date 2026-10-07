@@ -131,6 +131,14 @@ jobs:
         # is the only check that can catch it before macOS does.
         run: python3 tools/check_shell_continuations.py
 
+      - name: The archive layout the packager writes is still valid
+        # LinuxEnvironmentPackager emits these bytes but cannot be run here:
+        # there is no iOS toolchain on a runner. So the same header layout is
+        # written by this script and read back by Python's own tarfile, which
+        # catches a wrong field offset, a truncated octal size or a checksum
+        # summed over the wrong bytes before an iPad ever sees the archive.
+        run: python3 tools/validate_tar_layout.py
+
       - name: The shipped Swift interfaces are readable by this Xcode
         # app/Frameworks/StikJIT.xcframework ships no binary .swiftmodule, only
         # .swiftinterface files, so those files are the only description of the
