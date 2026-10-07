@@ -320,6 +320,66 @@ final class LinuxEnvironmentStore: ObservableObject {
         try saveSnapshots()
     }
 
+    /// Put a snapshot back over the environment.
+    ///
+    /// Taking a snapshot without being able to restore one is a backup that
+    /// cannot be used, which is the same as not having it. The environment's
+    /// current contents are replaced from the copy, and the snapshot itself is
+    /// kept: a restore is a decision the user may want to undo, and deleting
+    /// the only copy of the state they just abandoned would be hostile.
+    ///
+    /// Like taking one, this is offline and therefore valid: no guest runs in
+    /// this build, so there is nothing to quiesce.
+    func restoreSnapshot(_ snapshot: LinuxSnapshot, of environment: LinuxEnvironment) throws {
+        let fm = FileManager.default
+        let envDir = Self.directory(for: environment)
+        let holder = envDir.appendingPathComponent("snapshots", isDirectory: true)
+        let source = holder.appendingPathComponent(snapshot.id.uuidString)
+        guard fm.fileExists(atPath: source.path) else {
+            throw PackagerError.createFailed("\(snapshot.name) (the copy is gone)")
+        }
+
+        let children = try fm.contentsOfDirectory(at: envDir,
+                                                  includingPropertiesForKeys: [.isDirectoryKey])
+        // Replace in two phases: take the old state aside first, so a failure
+        // halfway leaves the environment either old or new, never half of each.
+        let staging = envDir.appendingPathComponent(".restore-\(UUID().uuidString)",
+                                                    isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+
+        do {
+            for child in children where child.lastPathComponent != "snapshots" {
+                try fm.moveItem(at: child,
+                                to: staging.appendingPathComponent(child.lastPathComponent))
+            }
+            for child in try fm.contentsOfDirectory(at: source,
+                                                    includingPropertiesForKeys: nil) {
+                try fm.copyItem(at: child,
+                                to: envDir.appendingPathComponent(child.lastPathComponent))
+            }
+        } catch {
+            // Roll the old state back over whatever was copied in. The staging
+            // folder lives inside the environment, so it has to be skipped by
+            // name: removing it first would take the very copy being restored
+            // from, and the environment would be left empty.
+            let now = (try? fm.contentsOfDirectory(at: envDir,
+                                                   includingPropertiesForKeys: nil)) ?? []
+            for child in now {
+                let name = child.lastPathComponent
+                if name == "snapshots" || name == staging.lastPathComponent { continue }
+                try? fm.removeItem(at: child)
+            }
+            let aside = (try? fm.contentsOfDirectory(at: staging,
+                                                     includingPropertiesForKeys: nil)) ?? []
+            for child in aside {
+                try? fm.moveItem(at: child,
+                                 to: envDir.appendingPathComponent(child.lastPathComponent))
+            }
+            throw error
+        }
+    }
+
     func deleteSnapshot(_ snapshot: LinuxSnapshot, of environment: LinuxEnvironment) throws {
         let holder = Self.directory(for: environment)
             .appendingPathComponent("snapshots", isDirectory: true)
@@ -561,6 +621,16 @@ struct LinuxEnvironmentDetailView: View {
                             Button("Delete", role: .destructive) {
                                 try? store.deleteSnapshot(snapshot, of: draft)
                             }
+                            Button("Restore") {
+                                do {
+                                    try store.restoreSnapshot(snapshot, of: draft)
+                                    notice = "Restored \(snapshot.name). The previous contents were "
+                                        + "replaced; the snapshot itself is kept."
+                                } catch {
+                                    notice = "Restore failed: \(error.localizedDescription)"
+                                }
+                            }
+                            .tint(MadeiraTheme.accent)
                         }
                     }
                 } else {
