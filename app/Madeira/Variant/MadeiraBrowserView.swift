@@ -206,41 +206,117 @@ private struct BrowserWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var parent: BrowserWebView
-        private var progress: Progress?
 
         init(_ parent: BrowserWebView) { self.parent = parent }
+
+        // MARK: Deciding whether a navigation is a page or a file
+
+        /// Most links do not announce themselves as downloads; the answer
+        /// arrives with the response. `shouldPerformDownload` covers the rest:
+        /// it is set when the user long-presses a link and picks Download,
+        /// which is the one case where the link itself is the whole signal.
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+        }
+
+        /// THE call that starts a download. Without it WebKit's default policy
+        /// is `.allow`, so a response nothing can render is fetched and then
+        /// discarded — which is precisely the "tap a .exe link and nothing
+        /// happens" symptom this screen had.
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            decisionHandler(Self.isDownload(navigationResponse) ? .download : .allow)
+        }
 
         /// WKWebView's download API (iOS 14.5+). We take over the transfer so
         /// the file lands in our shared Downloads folder instead of a
         /// sandboxed location the user cannot reach, and so we can recognise an
         /// installer and offer to run it.
-        func navigationAction(_ navigationAction: WKNavigationAction,
-                             didBecome download: WKDownload) {
-            attach(download)
+        ///
+        /// Both of these must carry the `webView:` label. An earlier revision
+        /// declared them as `navigationAction(_:didBecome:)` and
+        /// `navigationResponse(_:didBecome:)`, which are not
+        /// `WKNavigationDelegate` requirements at all — they were ordinary
+        /// methods nothing ever called, so the downloads they were meant to
+        /// catch never existed.
+        func webView(_ webView: WKWebView,
+                     navigationAction: WKNavigationAction,
+                     didBecome download: WKDownload) {
+            attach(download, name: download.originalRequest?.url?.lastPathComponent)
         }
 
-        func navigationResponse(_ navigationResponse: WKNavigationResponse,
-                                didBecome download: WKDownload) {
-            attach(download)
+        func webView(_ webView: WKWebView,
+                     navigationResponse: WKNavigationResponse,
+                     didBecome download: WKDownload) {
+            attach(download, name: navigationResponse.response.suggestedFilename)
         }
 
-        private func attach(_ download: WKDownload) {
-            let destination = DownloadStore.directory
-                .appendingPathComponent(download.originalRequest?.url?.lastPathComponent ?? "download")
-            download.delegate = DownloadDelegate(destination: destination) { [weak self] finished in
+        private func attach(_ download: WKDownload, name: String?) {
+            download.delegate = DownloadDelegate(hint: name) { [weak self] finished in
                 Task { @MainActor in self?.parent.onDownload(finished) }
             }
+        }
+
+        /// Mimes WebKit renders as a document. Anything else is a file to us.
+        private static let renderableMimes: Set<String> = [
+            "text/html", "text/plain", "text/xml", "text/css", "text/csv",
+            "application/xhtml+xml", "application/xml", "application/json",
+            "application/javascript", "application/x-javascript",
+            "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/bmp", "image/svg+xml", "image/x-icon",
+            "application/pdf", "application/zip",
+            "audio/mpeg", "audio/ogg", "audio/wav", "audio/flac",
+            "video/mp4", "video/webm", "video/ogg",
+            "application/vnd.apple.mpegurl",
+        ]
+
+        private static func isDownload(_ response: WKNavigationResponse) -> Bool {
+            let http = response.response as? HTTPURLResponse
+
+            // A server that says attachment means it, whatever it claims the
+            // type is. This is the common case for "Download now" buttons.
+            if let disposition = http?.value(forHTTPHeaderField: "Content-Disposition"),
+               disposition.range(of: "attachment", options: .caseInsensitive) != nil {
+                return true
+            }
+
+            // An installer extension is a download even when the server
+            // mislabels it application/octet-stream or gets it wrong.
+            if let name = response.response.suggestedFilename,
+               BrowserDownload.installerExtensions.contains(BrowserDownload.pathExtension(of: name)) {
+                return true
+            }
+
+            // No type at all: nothing to render it with.
+            guard let mime = http?.mimeType?.lowercased(), !mime.isEmpty else { return true }
+            // Keep any parameters (charset=...) out of the comparison.
+            let bare = mime.split(separator: ";").first.map(String.init) ?? mime
+            return !renderableMimes.contains(bare)
         }
     }
 }
 
-/// Moves one download to the shared folder and reports the result.
+/// Picks a destination in the shared folder and reports the result.
+///
+/// The name is chosen here rather than when the download is attached, because
+/// `suggestedFilename` is only known at this point: it is what the server put
+/// in `Content-Disposition`, and it is the name the user expects to see.
 private final class DownloadDelegate: NSObject, WKDownloadDelegate {
-    private let destination: URL
+    /// The name the coordinator could guess from the URL, used only if the
+    /// server supplies nothing better.
+    private let hint: String?
     private let completion: (BrowserDownload) -> Void
 
-    init(destination: URL, completion: @escaping (BrowserDownload) -> Void) {
-        self.destination = destination
+    /// Set the moment WebKit accepts a destination; every later callback
+    /// depends on it, so it stays optional rather than assuming the order of
+    /// the calls.
+    private var destination: URL?
+
+    init(hint: String?, completion: @escaping (BrowserDownload) -> Void) {
+        self.hint = hint
         self.completion = completion
     }
 
@@ -248,24 +324,55 @@ private final class DownloadDelegate: NSObject, WKDownloadDelegate {
                   decideDestinationUsing response: URLResponse,
                   suggestedFilename: String,
                   completionHandler: @escaping (URL?) -> Void) {
-        completionHandler(destination)
+        let name = Self.uniqueName(for: suggestedFilename.isEmpty ? (hint ?? "download") : suggestedFilename)
+        let url = DownloadStore.directory.appendingPathComponent(name)
+        destination = url
+        completionHandler(url)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
+        guard let destination else {
+            report(download, failure: "the download never chose a destination")
+            return
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path)
+        let bytes = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         completion(BrowserDownload(filename: destination.lastPathComponent,
                                    sourceURL: download.originalRequest?.url ?? URL(fileURLWithPath: "/"),
                                    localURL: destination,
-                                   byteCount: size ?? 0,
+                                   byteCount: bytes,
                                    finished: true))
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        completion(BrowserDownload(filename: destination.lastPathComponent,
+        report(download, failure: error.localizedDescription)
+    }
+
+    private func report(_ download: WKDownload, failure: String) {
+        let url = destination ?? DownloadStore.directory.appendingPathComponent(hint ?? "download")
+        completion(BrowserDownload(filename: url.lastPathComponent,
                                    sourceURL: download.originalRequest?.url ?? URL(fileURLWithPath: "/"),
-                                   localURL: destination,
+                                   localURL: url,
                                    finished: false,
-                                   failure: error.localizedDescription))
+                                   failure: failure))
+    }
+
+    /// WebKit will not write to a path that already exists on some versions,
+    /// and silently clobbering a file the user already has is worse. Pick a
+    /// fresh name instead: `installer.exe`, `installer-2.exe`, ...
+    private static func uniqueName(for name: String) -> String {
+        let cleaned = name.replacingOccurrences(of: "/", with: "-")
+        guard !cleaned.isEmpty else { return "download" }
+        let base = (cleaned as NSString).deletingPathExtension
+        let ext = (cleaned as NSString).pathExtension
+        var candidate = cleaned
+        var n = 1
+        while FileManager.default.fileExists(atPath:
+            DownloadStore.directory.appendingPathComponent(candidate).path) {
+            n += 1
+            candidate = ext.isEmpty ? "\(base)-\(n)" : "\(base)-\(n).\(ext)"
+        }
+        return candidate
     }
 }
 
