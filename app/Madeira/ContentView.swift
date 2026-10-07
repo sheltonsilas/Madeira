@@ -1279,9 +1279,10 @@ struct ContentView: View {
                 }
             }
             // A new user with no debugger attached gets the setup wizard once.
-            // Without JIT everything still runs, but interpreted, so this is a
-            // speed problem rather than a crash - which is exactly the kind of
-            // thing a user will otherwise never diagnose on their own.
+            // Without JIT no guest session can start at all -- this FEX build has
+            // only the ARM64 JIT core, so there is no interpreter to fall back to
+            // (see JitManager.launchBlocked). The wizard is what tells someone
+            // that before they spend an hour assuming the app is broken.
             .task {
                 if !jitOnboarded && !isDebuggerAttached() { showJitOnboarding = true }
             }

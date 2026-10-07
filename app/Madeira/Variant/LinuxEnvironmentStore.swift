@@ -407,11 +407,22 @@ struct LinuxEnvironmentManagerView: View {
                 NavigationLink {
                     LinuxEnvironmentDetailView(environment: environment, store: store)
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(environment.name).font(.headline)
-                        Text("\(environment.vcpus) vCPU · \(environment.ramDescription) · \(environment.display.title)")
-                            .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: MadeiraTheme.gap) {
+                        Image(systemName: "shippingbox.circle.fill")
+                            .font(.system(.title2, design: .rounded))
+                            .foregroundStyle(MadeiraTheme.accent)
+                            .frame(width: 34)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(environment.name).font(MadeiraTheme.heading())
+                            Text("\(environment.vcpus) vCPU · \(environment.ramDescription) · \(environment.display.title)")
+                                .font(MadeiraTheme.caption()).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
+                    .padding(.vertical, 4)
                 }
                 .contextMenu {
                     Button("Export this environment…") { export(environment) }
@@ -442,6 +453,8 @@ struct LinuxEnvironmentManagerView: View {
             }
         }
         .navigationTitle("Madeira Linux")
+        .tint(MadeiraTheme.accent)
+        .font(MadeiraTheme.body())
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: [.data],
                       allowsMultipleSelection: false) { result in

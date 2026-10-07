@@ -157,6 +157,12 @@ struct MadeiraBrowserView: View {
             }
             .navigationTitle("Browser")
             .navigationBarTitleDisplayMode(.inline)
+            // The accent both variants share, set here so the toolbar button,
+            // the Install buttons on the shelf and any tinted control on this
+            // screen agree with the environment manager and with the tint the
+            // SideStore source ships.
+            .tint(MadeiraTheme.accent)
+            .font(MadeiraTheme.body())
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -412,9 +418,11 @@ private struct DownloadCard: View {
     let store: DownloadStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: item.isInstaller ? "shippingbox" : "doc")
+                Image(systemName: item.isInstaller ? "shippingbox.fill" : "doc.fill")
+                    .font(.system(.title3, design: .rounded))
+                    .foregroundStyle(item.isInstaller ? MadeiraTheme.accent : MadeiraTheme.warning)
                 Spacer()
                 Button {
                     store.remove(item)
@@ -423,17 +431,26 @@ private struct DownloadCard: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text(item.filename).font(.caption2).lineLimit(2)
+            Text(item.filename)
+                .font(MadeiraTheme.caption().weight(.semibold))
+                .lineLimit(2)
             if item.isInstaller && item.finished {
                 Button("Install") { WindowsInstallerBridge.shared.offer(item, source: store) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
+                    .tint(MadeiraTheme.accent)
             } else if let failure = item.failure {
-                Text(failure).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                Text(failure).font(MadeiraTheme.caption()).foregroundStyle(MadeiraTheme.danger).lineLimit(2)
             } else {
-                Text(item.megabytes).font(.caption2).foregroundStyle(.secondary)
+                Text(item.megabytes).font(MadeiraTheme.mono()).foregroundStyle(.secondary)
             }
         }
-        .frame(width: 150, alignment: .leading)
+        .padding(10)
+        .frame(width: 158, alignment: .leading)
+        .background(MadeiraTheme.surface, in: RoundedRectangle(cornerRadius: MadeiraTheme.corner))
+        .overlay(
+            RoundedRectangle(cornerRadius: MadeiraTheme.corner)
+                .strokeBorder(MadeiraTheme.hairline, lineWidth: 1)
+        )
     }
 }
