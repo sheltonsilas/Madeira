@@ -63,6 +63,11 @@ struct JitOnboardingView: View {
             }
             .navigationTitle("JIT")
             .navigationBarTitleDisplayMode(.inline)
+            // Same accent and type as the two variant screens, so the wizard
+            // that stands between a user and their first session looks like it
+            // belongs to the app it is setting up.
+            .tint(MadeiraTheme.accent)
+            .font(MadeiraTheme.body())
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
@@ -78,14 +83,21 @@ struct JitOnboardingView: View {
             HStack(spacing: 12) {
                 Image(systemName: jit.status.symbol)
                     .font(.title2)
-                    .foregroundStyle(jit.status.isOn ? .green : .orange)
+                    .foregroundStyle(jit.status.isOn ? Color.green : MadeiraTheme.danger)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(jit.status.isOn ? "JIT is on" : "JIT is off")
-                        .font(.headline)
+                        .font(MadeiraTheme.heading())
+                    // This used to read "Code is interpreted. Everything still
+                    // runs", which is the same false promise the fallback
+                    // notice made. There is no interpreter in this build, so
+                    // off means nothing will run, and saying otherwise sends
+                    // the user off to debug a game that was never started.
                     Text(jit.status.isOn
-                         ? "Code is compiled to native instructions. This is full speed."
-                         : "Code is interpreted. Everything still runs, but games and video are much slower.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                         ? ("Code is compiled to native instructions. This is full speed.")
+                         : ("No guest will run in this state. This build has only the ARM64 "
+                            + "JIT core, so there is no interpreter to fall back to — tap "
+                            + "Enable JIT below."))
+                        .font(MadeiraTheme.caption()).foregroundStyle(.secondary)
                 }
             }
             .padding(.vertical, 4)

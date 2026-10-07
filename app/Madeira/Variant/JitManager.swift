@@ -46,7 +46,9 @@ enum JITStatus: Equatable {
     /// No debugger attached, but the pool still maps and runs code.
     /// Seen briefly when a helper enables JIT and then detaches.
     case transitioning
-    /// No JIT. FEX must fall back to its interpreter.
+    /// No JIT. Nothing can execute in this state: this FEX build ships only
+    /// the ARM64 JIT core, so there is no interpreter to fall back to. See
+    /// `launchBlocked` for the evidence.
     case off(reason: JITOffReason)
 
     var isOn: Bool { self == .ready }
@@ -96,9 +98,14 @@ final class JitManager: ObservableObject {
     @Published private(set) var status: JITStatus = .off(reason: .debuggerNotAttached)
     @Published private(set) var isEnabling = false
 
-    /// When the user has explicitly chosen the interpreter-only fallback.
-    /// UTM SE does the same thing: it drops the JIT and runs an interpreter,
-    /// which works everywhere but is much slower.
+    /// When the user has explicitly asked for the interpreter-only fallback.
+    ///
+    /// UTM SE really does drop the JIT and interpret, which is where the idea
+    /// comes from and why the setting exists. This build cannot: FEX is
+    /// compiled without an interpreter, so the choice is recorded and the
+    /// session refuses to start rather than pretending to be slower. The
+    /// setting is kept so it becomes true the day an interpreter backend is
+    /// restored.
     ///
     /// Backed by UserDefaults rather than declared with @AppStorage, for two
     /// reasons that both bite at compile or run time:
