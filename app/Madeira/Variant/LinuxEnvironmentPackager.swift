@@ -578,9 +578,9 @@ private final class TarReader {
 
     /// Step over padding the writer added after a body of `count` bytes.
     func align(_ count: Int64) throws {
-        let rem = Int(count % Int64(blockSize))
+        let rem = Int(count % Int64(Self.blockSize))
         guard rem != 0 else { return }
-        _ = try readSome(blockSize - rem)
+        _ = try readSome(Self.blockSize - rem)
     }
 
     /// Up to `count` bytes; empty means the stream is over.
@@ -593,12 +593,19 @@ private final class TarReader {
 
     /// The next full 512-byte block, or nil at a clean end of stream.
     private func readBlock() throws -> [UInt8]? {
-        let block = try readSome(blockSize)
+        let block = try readSome(Self.blockSize)
         if block.isEmpty { finished = true; return nil }
-        if block.count < blockSize { throw PackagerError.truncated }
+        if block.count < Self.blockSize { throw PackagerError.truncated }
         return block
     }
 
+    /// `Self.` is not decoration here. Both callers above are instance methods,
+    /// and a bare static member is not in scope inside one: the compiler reads
+    /// the unqualified name as `self.blockSize` and rejects it with "static
+    /// member 'blockSize' cannot be used on instance of type 'TarReader'" --
+    /// which is exactly what four lines of the first real compile of this file
+    /// produced. `checksumValid` below uses the same constant unprefixed and
+    /// compiles, because it is static; that difference is the tell.
     private static let blockSize = 512
 
     fileprivate static func cString(_ b: [UInt8], _ start: Int, _ max: Int) -> String {
