@@ -1102,3 +1102,62 @@ Commits, newest first: `36b5edd` (wizard reskin), `b91d6cc` (snapshot restore),
    Revoke it at GitHub → Settings → Developer settings → Personal access
    tokens (classic). It was minted with `repo` + `workflow` scope and a 30-day
    expiry, and until it is revoked it can push to the fork.
+---
+
+## 11. SESSION 8 — PUSH ACCESS RESTORED, FIRST GREEN BUILD, FIRST IPAS
+
+State at the start: the fork's branch was still at `9ffb450`, which shares no
+ancestry with the six commits holding the variant work; nothing had been
+pushed; every run of the two-variant build had been red.
+
+What changed:
+
+1. **Why "the new IPA had no improvements" is now explained.** The branch was at
+   `9ffb450`, so every published IPA came from a tree that did not contain the
+   variant commits at all - they were local only. Pushed for the first time.
+
+2. **Why every build was red is fixed.** The first real compile of
+   `app/Madeira/Variant/LinuxEnvironmentPackager.swift` produced four copies of
+
+       error: static member 'blockSize' cannot be used on instance of type 'TarReader'
+
+   at lines 581, 583, 596, 598. `align()` and `readBlock()` are instance methods
+   and have to write a static member as `Self.blockSize`; `checksumValid()` uses
+   the same constant bare and compiles because it is static. Fixed in `f25b49c`.
+
+3. **A real browser bug is fixed.** `WKDownload.delegate` is a *weak* reference.
+   The view built its `DownloadDelegate` inline and retained it nowhere, so
+   WebKit's `decideDestinationUsing` and `downloadDidFinish` were delivered to
+   nil: a download began and then left no file, no shelf entry and no error, and
+   archive links were treated as renderable. The coordinator now owns each
+   delegate, keyed by its download. Fixed in `ba14034`.
+
+4. **Build 75 is the first IPA that contains the variant work.** All four jobs
+   green. Release `build-75`, published 2026-10-08, carries
+   `Madeira-windows-unsigned.ipa`, `Madeira-linux-unsigned.ipa`, `source.json`
+   and the three icons; `.../releases/latest/download/source.json` now points
+   SideStore at it, version 75.0.
+
+Verified rather than assumed: the `Madeira.debug.dylib` inside *both* IPAs
+contains the new strings from `PointerMode.swift`, `MadeiraBrowserView.swift`,
+`JitOnboardingView.swift` and `JitManager.swift`.
+
+Still not true, stated plainly:
+
+* **JIT-less cannot run a guest**, and this is not a wiring gap. FEX is compiled
+  with only the ARM64 JIT core: `FEXCore/Source/CMakeLists.txt` builds the
+  fallback helpers and no interpreter core, and `Core.cpp` gives every thread
+  `CreateArm64JITCore` with no branch. Restoring an interpreter is a project, not
+  a toggle. The app now says so instead of promising a slower mode.
+* **The Linux variant cannot launch a guest.** A full Ubuntu desktop needs a
+  full-system emulator; the manager, the packager and the store are real, the
+  emulator is not there.
+* **`VCREDIST_B64` is not set** - the repository has zero secrets - so the build
+  warns and ships without Microsoft's VC++ runtime DLLs. Some 64-bit Windows
+  programs need them.
+* Nothing here has been run on an iPad.
+
+Credentials: push used an OAuth device-flow grant for the GitHub CLI app, stored
+at `~/.madeira_push_token` and used only via the `fork` remote. Revoke it at
+GitHub -> Settings -> Applications -> Authorized OAuth Apps when it is no longer
+needed. The older classic PAT in section 10 still needs revoking too.
