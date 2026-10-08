@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
 #
-# Builds both variants of the fork on a macOS runner and uploads unsigned IPAs.
+# Builds the app on a macOS runner and uploads one unsigned IPA, which
+# presents both variants behind a switch in the app.
 #
 # HONEST STATUS - READ BEFORE TRUSTING A GREEN TICK
 # This workflow is structurally complete but is NOT expected to produce a
@@ -177,16 +178,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - variant: windows
+          - variant: unified
             # Debug only, on purpose. See the header comment.
+            #
+            # ONE entry, not two. The variant stopped being a compile-time
+            # choice: MADEIRA_VARIANT_LINUX is read in exactly one place, and
+            # every file in app/Madeira/Variant/ is compiled into this target
+            # either way. Building twice therefore produced two IPAs that could
+            # each present only one of the two front screens. The choice now
+            # comes from AppVariant.selectionKey at run time, so one binary
+            # shows both and the user switches between them.
+            #
+            # The empty flag is deliberate: it leaves the default at Windows
+            # and the switch reaches the Linux manager from there. The bundle
+            # identifier is unchanged from the old Windows variant, so an
+            # existing install upgrades in place rather than appearing twice.
             variant_flag: ""
             bundle_id: com.willfaust.madeora
-            runner: macos-15
-          - variant: linux
-            variant_flag: MADEIRA_VARIANT_LINUX
-            # A distinct bundle id so both variants can be installed side by
-            # side, and so SideStore's source.json points at something real.
-            bundle_id: com.willfaust.madeora.linux
             runner: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -231,8 +239,13 @@ jobs:
             toolchains/llvm-host-bin
             toolchains/llvm-project
           key: toolchain-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
+          # `unified` is a new cache namespace. Without naming the old variants
+          # explicitly, the first unified build would miss every cache this
+          # repository already has and redo the toolchain work from scratch.
           restore-keys: |
             toolchain-${{ matrix.variant }}-
+            toolchain-windows-
+            toolchain-linux-
             llvm-ios-
 
       - name: Fetch llvm-mingw (pinned upstream hash)
@@ -380,7 +393,12 @@ jobs:
             wine/build-macos
             wine/build-arm64ec
           key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md', 'build/fex-ios/build.sh', 'build/wine-macos/build.sh', 'build/wine-pe/configure-arm64ec.sh') }}
-          restore-keys: native-${{ matrix.variant }}-
+          # Same reason as the toolchain cache above: a fresh `unified` key
+          # would otherwise miss the native FEX/Wine builds already cached.
+          restore-keys: |
+            native-${{ matrix.variant }}-
+            native-windows-
+            native-linux-
 
       - name: The LLVM-for-iOS archives the shader compiler links against
         # Checked here rather than 25 minutes into the chain: dxmt-ios/combine.sh
@@ -477,7 +495,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # A side-loader source, so SideStore can install and re-sign both variants
+  # A side-loader source, so SideStore can install and re-sign the app
   # itself instead of anyone downloading IPAs by hand every 7 days. This is what
   # replaces the hosted preview page.
   publish:
@@ -514,8 +532,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="build-${{ github.run_number }}"
-          gh release create "$tag" --title "Madeira two variants $tag" \
-            --notes "Built from ${{ github.sha }}. Unsigned: sign with Sideloadly or SideStore. See GUIDE.md." \
+          gh release create "$tag" --title "Madeira $tag" \
+            --notes "One app: Windows apps through Wine on FEX-Emu, and Linux environments through QEMU, with a switch between them. Built from ${{ github.sha }}. Unsigned: sign with Sideloadly or SideStore. See GUIDE.md." \
             dist/*.ipa
           echo "tag=$tag" >> "$GITHUB_ENV"
 
@@ -524,10 +542,12 @@ jobs:
         # update forever, so it is read from the release just created.
         run: |
           set -euo pipefail
+          # One IPA, one app. --linux-ipa is deliberately NOT passed: the
+          # unified binary presents both variants, so passing it would publish
+          # a second, near-identical app in the source.
           python3 tools/make_source.py \
             --out dist/source.json \
-            --windows-ipa "$(ls dist/Madeira-windows-*.ipa | head -1)" \
-            --linux-ipa "$(ls dist/Madeira-linux-*.ipa | head -1)" \
+            --windows-ipa "$(ls dist/Madeira-*-unsigned.ipa | head -1)" \
             --base-url "https://github.com/${{ github.repository }}/releases/download/${{ env.tag }}" \
             --version "${GITHUB_RUN_NUMBER}.0"
 

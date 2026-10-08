@@ -1203,6 +1203,14 @@ struct ContentView: View {
     /// Dismissal is remembered so it does not nag on every start.
     @State private var showJitOnboarding = false
     @AppStorage("madeira.jitOnboarded") private var jitOnboarded = false
+    /// Which variant is on screen. Persisted, because it is the user's choice
+    /// and no longer a build setting: both variants are compiled into this one
+    /// binary, so switching does not need a second install.
+    @AppStorage(AppVariant.selectionKey) private var storedVariant = VariantBuild.current.rawValue
+
+    /// The variant to present: the stored choice, or the one this binary was
+    /// built as when nothing has been chosen yet.
+    private var variant: AppVariant { AppVariant.resolve(storedRawValue: storedVariant) }
 
     enum JITStatus {
         case unknown
@@ -1253,8 +1261,8 @@ struct ContentView: View {
                         Button {
                             showVariantScreen = true
                         } label: {
-                            Label(activeVariant.displayName,
-                                  systemImage: activeVariant.symbol)
+                            Label(variant.displayName,
+                                  systemImage: variant.symbol)
                         }
                     }
                 }
@@ -1273,9 +1281,29 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showVariantScreen) {
-                switch activeVariant {
-                case .windows: MadeiraBrowserView()
-                case .linux: NavigationStack { LinuxEnvironmentManagerView() }
+                VStack(spacing: 0) {
+                    // The switch itself. Both variants are in this one binary,
+                    // so the user changes which front screen they are in rather
+                    // than installing a second app. Segmented rather than a
+                    // menu because there are exactly two, and which one is
+                    // current should be readable at a glance.
+                    Picker("Variant", selection: $storedVariant) {
+                        ForEach(AppVariant.allCases) { candidate in
+                            Text(candidate.displayName).tag(candidate.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                    // Each screen brings its own navigation container:
+                    // MadeiraBrowserView contains its own NavigationStack, and
+                    // the environment manager expects one around it. Wrapping
+                    // both in a second stack here would nest them.
+                    switch variant {
+                    case .windows: MadeiraBrowserView()
+                    case .linux: NavigationStack { LinuxEnvironmentManagerView() }
+                    }
                 }
             }
             // A new user with no debugger attached gets the setup wizard once.

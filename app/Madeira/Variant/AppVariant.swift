@@ -88,5 +88,37 @@ enum VariantBuild {
     }()
 }
 
-/// Convenience for SwiftUI: the active variant.
+/// Convenience for SwiftUI: the variant this binary was built as.
+///
+/// This is the DEFAULT, not the final answer. One binary now presents either
+/// variant, so UI code reads the user's choice and falls back to this. See
+/// `AppVariant.selectionKey`.
 let activeVariant = VariantBuild.current
+
+extension AppVariant {
+    /// The UserDefaults key holding the user's chosen variant.
+    ///
+    /// WHY THIS EXISTS, AND WHAT IT REPLACES
+    /// The two variants used to be chosen at compile time, with
+    /// `MADEIRA_VARIANT_LINUX` set as a compilation condition for one of them.
+    /// A search of the whole app shows that condition used in exactly ONE
+    /// place - `VariantBuild.current` below. Every file in `Variant/` is
+    /// compiled into the single Madeira target either way. So the "two apps"
+    /// were one app built twice with a constant flipped, and neither build
+    /// could present the other.
+    ///
+    /// Reading the choice at run time is what turns them into one app with a
+    /// switch in it, which is what the brief asks for. `VariantBuild` still
+    /// supplies the initial value, so an IPA built for Linux still opens as
+    /// Linux and nothing changes for anyone who never touches the switch.
+    static let selectionKey = "madeira.variant"
+
+    /// The variant to present, given whatever is stored.
+    ///
+    /// Falls back rather than force-unwrapping: a value written by a future
+    /// build, or a corrupt default, must not leave the app with no variant to
+    /// show at all.
+    static func resolve(storedRawValue: String) -> AppVariant {
+        AppVariant(rawValue: storedRawValue) ?? VariantBuild.current
+    }
+}
