@@ -96,7 +96,8 @@ jobs:
       - name: Install UTM's documented build prerequisites
         run: |
           set -euo pipefail
-          brew install bison pkg-config gettext glib libgpg-error nasm meson
+          # ninja is meson's default backend and UTM's script drives meson.
+          brew install bison pkg-config gettext glib libgpg-error nasm meson ninja
           # Homebrew's python3 is PEP 668 managed, so a bare `pip3 install`
           # aborts with `error: externally-managed-environment`. That is exactly
           # how the first run of this job failed, at this line, before any QEMU
@@ -107,7 +108,13 @@ jobs:
           # is not active in each of those would fail later and less clearly.
           # These are two pure-Python packages, which is what makes the
           # override safe here and not safe in general.
-          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install six pyparsing
+          #
+          # setuptools is required as well, and that is the second thing the
+          # second run of this job died on:
+          #     "'setuptools' not found in your Python 3 installation."
+          # Homebrew's python3 no longer ships it, and UTM's script needs it
+          # before it can build anything.
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install six pyparsing setuptools wheel
 
       - name: Fetch UTM at a pinned revision
         run: |
