@@ -215,6 +215,20 @@ private struct BrowserWebView: UIViewRepresentable {
 
         init(_ parent: BrowserWebView) { self.parent = parent }
 
+        /// Strong references to the download delegates currently in flight.
+        ///
+        /// `WKDownload.delegate` is a WEAK reference. Creating a
+        /// `DownloadDelegate` inline and assigning it therefore releases it at
+        /// the end of that statement - nothing retains it - and WebKit's later
+        /// `decideDestinationUsing` and `downloadDidFinish` callbacks are sent
+        /// to nil. The symptom is a download that appears to begin and then
+        /// never lands: no file in Downloads, no shelf entry, and no error to
+        /// explain the silence. Holding each delegate here, keyed by the
+        /// download it serves, keeps it alive for exactly as long as WebKit
+        /// needs it; the completion handler removes the entry when the transfer
+        /// ends, so nothing leaks per download.
+        private var activeDelegates: [ObjectIdentifier: DownloadDelegate] = [:]
+
         // MARK: Deciding whether a navigation is a page or a file
 
         /// Most links do not announce themselves as downloads; the answer
@@ -261,9 +275,21 @@ private struct BrowserWebView: UIViewRepresentable {
         }
 
         private func attach(_ download: WKDownload, name: String?) {
-            download.delegate = DownloadDelegate(hint: name) { [weak self] finished in
-                Task { @MainActor in self?.parent.onDownload(finished) }
+            let key = ObjectIdentifier(download)
+            let delegate = DownloadDelegate(hint: name) { [weak self] finished in
+                Task { @MainActor in
+                    // The transfer is over, one way or the other: release the
+                    // delegate so a long browsing session does not accumulate
+                    // one retained object per download.
+                    self?.activeDelegates[key] = nil
+                    self?.parent.onDownload(finished)
+                }
             }
+            // Retain before assigning. `download.delegate` is weak, so the
+            // local must already be owned by something at the moment of
+            // assignment; that is the whole bug this dictionary fixes.
+            activeDelegates[key] = delegate
+            download.delegate = delegate
         }
 
         /// Mimes WebKit renders as a document. Anything else is a file to us.
@@ -273,7 +299,9 @@ private struct BrowserWebView: UIViewRepresentable {
             "application/javascript", "application/x-javascript",
             "image/png", "image/jpeg", "image/gif", "image/webp",
             "image/bmp", "image/svg+xml", "image/x-icon",
-            "application/pdf", "application/zip",
+            // A ZIP is not something WebKit draws; leaving it in this list made
+            // archive downloads look like renders that produced nothing.
+            "application/pdf",
             "audio/mpeg", "audio/ogg", "audio/wav", "audio/flac",
             "video/mp4", "video/webm", "video/ogg",
             "application/vnd.apple.mpegurl",
