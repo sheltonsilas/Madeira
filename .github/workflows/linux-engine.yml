@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# linux-engine.yml - build the engine that runs a Linux guest.
+#
+# WHY THIS IS A SEPARATE WORKFLOW, AND DISPATCH-ONLY
+# `build.yml` publishes a release on every push. This job builds QEMU, pkg-config
+# glue and the dependency tree around it for the iOS triple, which is a
+# multi-hour job that will need several iterations before it succeeds. Putting it
+# in `build.yml` would turn every push red while that happens, and the release
+# pipeline it shares is the only thing currently producing an IPA. So it lives
+# here, on `workflow_dispatch` only, and its failures are its own.
+#
+# WHAT IT BUILDS
+# Two sysroots, exactly as UTM builds them:
+#
+#   ios-tci-arm64  QEMU's TCG built with --enable-tcg-interpreter. This is the
+#                  JIT-less engine: a threaded interpreter, no executable
+#                  memory, no debugger. It is what UTM SE ships.
+#   ios-arm64      QEMU's TCG JIT. The fast engine, needs a debugger.
+#
+# Both are needed. `LinuxEnginePlan` picks between them at run time, and
+# `MADEIRA_HAS_QEMU` / `MADEIRA_HAS_QEMU_TCGI` in the app's build settings are
+# what tell the app which of them it was actually linked against.
+#
+# HOW IT WORKS, AND WHY IT IS SHAPED LIKE THIS
+# UTM has already solved this build, and re-solving it would be the wrong kind
+# of work. So this job uses UTM's own scripts and UTM's own pinned sources
+# rather than a hand-written configure line: `scripts/build_dependencies.sh`
+# knows the patches each dependency needs on iOS, and `patches/sources` pins
+# the exact upstream archives, including UTM's own QEMU packaging:
+#
+#   QEMU   https://github.com/utmapp/qemu/releases/download/v10.0.12-utm/qemu-10.0.12-utm.tar.xz
+#   pixman 0.38.0
+#   libslirp v4.9.1
+#
+# The UTM revision is pinned rather than tracking `main`, because `patches/`
+# changes with it and an unpinned build is not reproducible.
+#
+# LICENSING: QEMU is GPL-2.0 and UTM is GPL-3.0. Madeira is GPL-3.0-or-later,
+# so linking QEMU into it is compatible. Nothing here redistributes a binary
+# that the licence forbids; the app is already GPL-3.0-or-later.
+#
+# EXPECT THIS TO FAIL THE FIRST FEW TIMES. The dependency tree is sensitive to
+# Homebrew packages that shadow the iOS-only ones - UTM's own documentation
+# warns that `libusb`, `gawk` and `cmake` break the build when installed - and
+# macOS runners ship some of them. When it fails, read the first error rather
+# than the last, and pin or hide the offending package.
+
+name: linux-engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      utm_ref:
+        description: "utmapp/UTM commit to build the engine from"
+        type: string
+        default: "7eadb056ae0f91d979059544d0ddcd2d5a40be92"
+      targets:
+        description: "Which sysroots to build"
+        type: choice
+        options:
+          - both
+          - interpreter-only
+          - jit-only
+        default: "both"
+
+permissions:
+  contents: read
+
+jobs:
+  build-engine:
+    name: QEMU for iOS (${{ inputs.targets }})
+    runs-on: macos-15
+    # UTM's own CI allows hours for this; a hosted runner is capped at six, and
+    # both sysroots in one job can exceed it. Split the input if that happens.
+    timeout-minutes: 350
+    steps:
+      - name: Say what this produces
+        run: |
+          cat <<'TXT'
+          Building QEMU for aarch64-apple-ios from UTM's pinned sources.
+
+            interpreter-only -> ios-tci-arm64, the JIT-less engine (UTM SE)
+            jit-only         -> ios-arm64, the JIT engine (UTM)
+            both             -> both
+
+          Success means the sysroots are uploaded as an artifact. It does NOT
+          mean Madeira can launch a guest: the app still has to link them and
+          set MADEIRA_HAS_QEMU / MADEIRA_HAS_QEMU_TCGI, which is a separate
+          change to the Xcode project.
+          TXT
+
+      - uses: actions/checkout@v4
+
+      - name: Install UTM's documented build prerequisites
+        run: |
+          set -euo pipefail
+          brew install bison pkg-config gettext glib libgpg-error nasm meson
+          pip3 install six pyparsing
+
+      - name: Fetch UTM at a pinned revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/utmapp/UTM.git utm
+          cd utm
+          git checkout --quiet "${{ inputs.utm_ref }}"
+          echo "pinned at $(git rev-parse HEAD)"
+          # Show the versions this revision will actually build, so a failure
+          # downstream can be attributed without guessing.
+          grep -E '^(QEMU_SRC|PIXMAN_SRC|SLIRP_SRC)=' patches/sources || true
+
+      - name: Build the JIT-less sysroot (ios-tci-arm64)
+        if: ${{ inputs.targets != 'jit-only' }}
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          # bison must win over the one macOS ships; UTM's docs are explicit.
+          export PATH="/opt/homebrew/opt/bison/bin:$PATH"
+          ./scripts/build_dependencies.sh -p ios-tci -a arm64
+
+      - name: Build the JIT sysroot (ios-arm64)
+        if: ${{ inputs.targets != 'interpreter-only' }}
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/bison/bin:$PATH"
+          ./scripts/build_dependencies.sh -p ios -a arm64
+
+      - name: What was produced
+        if: always()
+        run: |
+          ls -la utm || true
+          find utm -maxdepth 2 -type d -name 'Sysroot*' -print 2>/dev/null || true
+
+      - name: Upload the sysroots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-ios-sysroots
+          path: |
+            utm/Sysroot
+            utm/Sysroot-*
+          if-no-files-found: warn
+          retention-days: 14
