@@ -101,8 +101,16 @@ jobs:
           # time, which is how the first two runs of this job died:
           #   llvm, spirv-llvm-translator, libxcb, libxrandr  are hard checks
           #   ninja  is meson's default backend, and UTM drives meson
+          #
+          # spirv-tools and spirv-headers were added after the fourth run, which
+          # got an hour into the dependency build and then stopped at
+          #   meson.build:2092:18: ERROR: Dependency "SPIRV-Tools" not found
+          # (tried pkg-config, framework and cmake)
+          # spirv-llvm-translator is a different package and is not enough on
+          # its own: that is the check UTM performs, this is what meson wants.
           brew install bison pkg-config gettext glib libgpg-error nasm meson ninja \
-                       llvm spirv-llvm-translator libxcb libxrandr
+                       llvm spirv-llvm-translator spirv-tools spirv-headers \
+                       libxcb libxrandr
           # Homebrew's python3 is PEP 668 managed, so a bare `pip3 install`
           # aborts with `error: externally-managed-environment`. That is exactly
           # how the first run of this job failed, at this line, before any QEMU
