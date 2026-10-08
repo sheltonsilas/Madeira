@@ -39,6 +39,9 @@ FILES = [
     ("JitOnboardingView.swift", "07"),
     ("LinuxEnvironmentPackager.swift", "08"),
     ("MadeiraTheme.swift", "09"),
+    ("LinuxEngine.swift", "10"),
+    ("LinuxImageDownloader.swift", "11"),
+    ("LinuxDistroOnboardingView.swift", "12"),
 ]
 
 GROUP_ID = "C3000001"

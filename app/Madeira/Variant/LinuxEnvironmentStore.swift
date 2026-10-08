@@ -70,9 +70,28 @@ struct LinuxEnvironment: Identifiable, Codable, Hashable {
     /// Display mode for the guest.
     var display: GuestDisplayMode = .resizable
 
-    /// Whether the JIT is required to run this environment. False only for the
-    /// interpreter-only fallback environment.
+    /// Whether the user wants the faster engine for this environment.
+    ///
+    /// This used to be a promise the build could not keep: it was written and
+    /// never read, and the manager still refused to start anything without a
+    /// debugger. It is now the input to `LinuxEnginePlan.resolve`, which turns
+    /// it into a real engine choice - UTM's JIT configuration when this is true
+    /// and a debugger is attached, and UTM SE's threaded interpreter otherwise.
     var requiresJIT: Bool = true
+
+    /// Which distribution this environment came from, and which of its images.
+    /// Catalogued ids rather than names, so the record survives a catalogue
+    /// being reordered or a distribution being renamed.
+    ///
+    /// Optional on purpose. Swift's synthesised decoder does not apply a
+    /// property's default value when the key is missing, so a non-optional
+    /// field added here would make every environment written by an earlier
+    /// build fail to decode, and they would appear to vanish on upgrade.
+    var distroID: String?
+    var imageID: String?
+    var imageKind: String?
+    /// Absolute path of the downloaded image inside this environment's folder.
+    var imagePath: String?
 
     enum GuestDisplayMode: String, Codable, CaseIterable, Identifiable {
         case resizable       // follows the iPad window, including Split View
@@ -452,6 +471,7 @@ struct LinuxEnvironmentManagerView: View {
     @State private var editing: LinuxEnvironment?
     @State private var banner: String?
     @State private var showImporter = false
+    @State private var showDistroPicker = false
 
     var body: some View {
         List {
@@ -459,7 +479,7 @@ struct LinuxEnvironmentManagerView: View {
                 ContentUnavailableView(
                     "No environments",
                     systemImage: "shippingbox",
-                    description: Text("Create one to get an Ubuntu desktop. Each environment is a rootfs you can import, snapshot and back up.")
+                    description: Text("Choose a distribution and Madeira downloads it, checks it against the published checksum and sets it up. You can also import an environment you already have.")
                 )
             }
 
@@ -503,13 +523,16 @@ struct LinuxEnvironmentManagerView: View {
                     }
                     .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                Button("Get a Linux distribution…") { showDistroPicker = true }
                 Button("Import environment…") { showImporter = true }
             } footer: {
                 Text("Import and export now work: both stream through a one-megabyte window, so a "
                      + "multi-gigabyte rootfs is never held in memory. Export writes a .madeira-env.tar.gz "
                      + "into the exports folder, which the Files app shows under On My iPhone > Madeira. "
-                     + "No guest can be launched from here yet — a full-system emulator is required and is "
-                     + "not part of this patch. See GUIDE.md.")
+                     + "A guest is run by the same engine UTM uses — QEMU — in one of two "
+                     + "configurations: with JIT when a debugger is attached, or with TCG's threaded "
+                     + "interpreter when one is not. The interpreter is the configuration UTM SE ships, "
+                     + "and it is why an environment can start with no JIT at all.")
             }
         }
         .navigationTitle("Madeira Linux")
@@ -531,6 +554,9 @@ struct LinuxEnvironmentManagerView: View {
                     banner = "Import failed: \(error.localizedDescription)"
                 }
             }
+        }
+        .sheet(isPresented: $showDistroPicker) {
+            LinuxDistroOnboardingView(store: store)
         }
         // A real two-way binding. `.constant(banner != nil)` looks the same but
         // its setter does nothing, so the alert could never be dismissed.
