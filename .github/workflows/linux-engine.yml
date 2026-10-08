@@ -96,8 +96,13 @@ jobs:
       - name: Install UTM's documented build prerequisites
         run: |
           set -euo pipefail
-          # ninja is meson's default backend and UTM's script drives meson.
-          brew install bison pkg-config gettext glib libgpg-error nasm meson ninja
+          # Read out of UTM's own `check_env` function rather than guessed.
+          # It refuses to run unless each of these resolves, one message at a
+          # time, which is how the first two runs of this job died:
+          #   llvm, spirv-llvm-translator, libxcb, libxrandr  are hard checks
+          #   ninja  is meson's default backend, and UTM drives meson
+          brew install bison pkg-config gettext glib libgpg-error nasm meson ninja \
+                       llvm spirv-llvm-translator libxcb libxrandr
           # Homebrew's python3 is PEP 668 managed, so a bare `pip3 install`
           # aborts with `error: externally-managed-environment`. That is exactly
           # how the first run of this job failed, at this line, before any QEMU
@@ -109,12 +114,17 @@ jobs:
           # These are two pure-Python packages, which is what makes the
           # override safe here and not safe in general.
           #
-          # setuptools is required as well, and that is the second thing the
-          # second run of this job died on:
-          #     "'setuptools' not found in your Python 3 installation."
-          # Homebrew's python3 no longer ships it, and UTM's script needs it
-          # before it can build anything.
-          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install six pyparsing setuptools wheel
+          # The full list `check_env` tests, taken from the script at the pinned
+          # revision. Installing them together is deliberate: the checks run in
+          # order and abort on the first failure, so adding one per run costs a
+          # full job cycle each.
+          #
+          #   six, pyparsing   UTM's documented pair
+          #   setuptools       provides the `distutils` module that is tested;
+          #                    Homebrew's python3 no longer ships it
+          #   pyyaml           tested as `yaml`
+          #   distlib, mako    tested directly
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install six pyparsing setuptools pyyaml distlib mako
 
       - name: Fetch UTM at a pinned revision
         run: |
@@ -155,8 +165,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qemu-ios-sysroots
-          path: |
-            utm/Sysroot
-            utm/Sysroot-*
+          # UTM names these from its own variables: SYSROOT_DIR is
+          # "sysroot-$PLATFORM_FAMILY_NAME-$ARCH", so the interpreter build
+          # lands in sysroot-iOS-TCI-arm64 and the JIT one in sysroot-iOS-arm64.
+          # The first version of this job looked for `Sysroot-*` and uploaded
+          # nothing even though the directory had been created.
+          path: utm/sysroot-*
           if-no-files-found: warn
           retention-days: 14
