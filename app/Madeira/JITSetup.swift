@@ -166,6 +166,15 @@ final class JITCoordinator: ObservableObject {
         var message: String {
             switch self {
             case .vpn:
+                // On iOS 26.4 and later, "connect LocalDevVPN" is advice that
+                // cannot work on its own, and giving it to someone who has
+                // already done it is how a fixable problem reads as a broken
+                // app. The requirement is appended rather than substituted so
+                // the message still makes sense on the older versions, where
+                // it is the whole answer.
+                if LocalDevVPNRequirement.needsSecondTunnel {
+                    return "Madeira couldn't reach this device. On iOS 26.4 and later, connect an IKEv2 VPN first and then LocalDevVPN, in that order, and try again. Pairing in Madeira removes the need for the second tunnel. See Settings, JIT."
+                }
                 return "Madeira couldn't reach this device. Connect LocalDevVPN, then try again."
             case .pairing:
                 return "This device closed the connection, which usually means it no longer accepts Madeira's pairing. Pair again, and check that LocalDevVPN is connected."
@@ -574,6 +583,9 @@ struct JITSettingsSection: View {
         } header: {
             Text("JIT")
         } footer: {
+            if LocalDevVPNRequirement.needsSecondTunnel {
+                Text(LocalDevVPNRequirement.explanation)
+            }
             Text("When LocalDevVPN can't reach this device, Enable JIT runs your \(JITNetworkShortcut.name) shortcut: it turns Cellular Data off when there's no Wi-Fi and connects LocalDevVPN, then puts both back once the game has started. Each run opens Shortcuts for a moment.")
         }
     }
@@ -630,6 +642,27 @@ struct JITSetupView: View {
                         Link("How to create a pairing file",
                              destination: URL(string: "https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md")!)
                         Button(LocalDevVPN.actionTitle) { LocalDevVPN.open() }
+                        // The single-tunnel instruction was correct until iOS
+                        // 26.4 and is wrong from then on, so the steps are shown
+                        // only where the extra one is needed and are drawn from
+                        // the same source the rest of the app reads.
+                        if LocalDevVPNRequirement.needsSecondTunnel {
+                            ForEach(
+                                Array(LocalDevVPNRequirement
+                                    .steps(pairingAvailable: OnDevicePairing.isSupported)
+                                    .enumerated()),
+                                id: \.offset
+                            ) { index, step in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(index + 1). \(step.title)")
+                                        .font(.footnote.weight(.medium))
+                                    Text(step.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 1)
+                            }
+                        }
                     } header: {
                         Text("Built-in StikJIT")
                     } footer: {

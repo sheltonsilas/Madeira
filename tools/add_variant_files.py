@@ -77,6 +77,7 @@ GROUPS = [
             ("LinuxEngine.swift", "10"),
             ("LinuxImageDownloader.swift", "11"),
             ("LinuxDistroOnboardingView.swift", "12"),
+            ("JitNetworkAdvice.swift", "13"),
         ],
     ),
     SourceGroup(

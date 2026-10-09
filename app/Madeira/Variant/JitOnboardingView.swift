@@ -189,7 +189,11 @@ struct JitOnboardingView: View {
             JITPrerequisite(
                 id: "vpn",
                 title: "LocalDevVPN connected",
-                detail: "Madeira talks to this device through a local tunnel. Cellular data will not carry it.",
+                // The detail comes from LocalDevVPNRequirement, which knows about
+                // the iOS 26.4 change: on those versions the single tunnel is not
+                // enough, and telling someone to connect it anyway is how they
+                // end up staring at two VPN icons and a launch that does nothing.
+                detail: LocalDevVPNRequirement.explanation,
                 state: .unknown),
         ]
     }

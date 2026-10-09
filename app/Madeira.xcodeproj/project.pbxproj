@@ -82,6 +82,7 @@
 		D1000003 /* MadeiraMachinesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000003 /* MadeiraMachinesView.swift */; };
 		D1000004 /* MadeiraStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000004 /* MadeiraStoreView.swift */; };
 		C1000001 /* AppVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001 /* AppVariant.swift */; };
+		C1000013 /* JitNetworkAdvice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000013 /* JitNetworkAdvice.swift */; };
 		C1000010 /* LinuxEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000010 /* LinuxEngine.swift */; };
 		C1000011 /* LinuxImageDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000011 /* LinuxImageDownloader.swift */; };
 		C1000012 /* LinuxDistroOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000012 /* LinuxDistroOnboardingView.swift */; };
@@ -272,6 +273,7 @@
 		D2000003 /* MadeiraMachinesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraMachinesView.swift; sourceTree = "<group>"; };
 		D2000004 /* MadeiraStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraStoreView.swift; sourceTree = "<group>"; };
 		C2000001 /* AppVariant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVariant.swift; sourceTree = "<group>"; };
+		C2000013 /* JitNetworkAdvice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JitNetworkAdvice.swift; sourceTree = "<group>"; };
 		C2000010 /* LinuxEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxEngine.swift; sourceTree = "<group>"; };
 		C2000011 /* LinuxImageDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxImageDownloader.swift; sourceTree = "<group>"; };
 		C2000012 /* LinuxDistroOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxDistroOnboardingView.swift; sourceTree = "<group>"; };
@@ -582,6 +584,7 @@
 		C3000001 /* Variant */ = {
 			isa = PBXGroup;
 			children = (
+				C2000013 /* JitNetworkAdvice.swift */,
 				C2000010 /* LinuxEngine.swift */,
 				C2000011 /* LinuxImageDownloader.swift */,
 				C2000012 /* LinuxDistroOnboardingView.swift */,
@@ -825,6 +828,7 @@
 				B1000002 /* JITBuiltInHost.swift in Sources */,
 				B1000003 /* JITBuiltInMessages.swift in Sources */,
 				B1000040 /* JITPairing.swift in Sources */,
+				C1000013 /* JitNetworkAdvice.swift in Sources */,
 				D1000001 /* MadeiraComponents.swift in Sources */,
 				D1000002 /* MadeiraShellView.swift in Sources */,
 				D1000003 /* MadeiraMachinesView.swift in Sources */,

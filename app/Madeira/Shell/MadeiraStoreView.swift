@@ -91,7 +91,11 @@ struct MadeiraStoreView: View {
                 tool(
                     name: "LocalDevVPN",
                     scheme: "localdevvpn://",
-                    detail: "Gives the debugger a route to this device when there is no other network.",
+                    // The single-tunnel sentence stopped being true in iOS 26.4,
+                    // so it is not written down as if it still were.
+                    detail: LocalDevVPNRequirement.needsSecondTunnel
+                        ? "Gives the debugger a route to this device. On iOS 26.4 and later it only works once an IKEv2 VPN is connected first; pairing in Madeira removes that need."
+                        : "Gives the debugger a route to this device when there is no other network.",
                     appStore: LocalDevVPN.appStore
                 )
             } header: {
