@@ -117,6 +117,7 @@ RUN_INPUTS = {
     "build.yml": {"source_ref": mirror_ci.SOURCE_REF},
     "heavy.yml": {"source_ref": mirror_ci.SOURCE_REF},
     "linux-engine.yml": {"targets": "interpreter-only"},
+    "swift-typecheck.yml": {"source_ref": mirror_ci.SOURCE_REF},
 }
 
 

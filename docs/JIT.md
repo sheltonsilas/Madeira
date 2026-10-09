@@ -134,6 +134,34 @@ Both methods reach this iPhone's `lockdownd` through LocalDevVPN's loopback
 (`10.7.0.1:62078`). The loopback works on Wi-Fi, or with no network at all,
 but not while cellular data is in use.
 
+### iOS 26.4 and later: the loopback needs a second tunnel
+
+On iOS 26.4 and later, LocalDevVPN alone is not enough. The loopback route is
+only installed once another IKEv2 or IPSec tunnel is already up, so LocalDevVPN
+reports itself connected, the check above finds no route through its interface,
+and Enable JIT fails. The symptom is a device with two VPN icons in the status
+bar that still cannot be reached; it is not something LocalDevVPN can fix, and
+the SideStore maintainers say so themselves in the issue thread where this was
+worked out (`SideStore/SideStore#1222`).
+
+Three ways out, and Madeira now says which one applies
+(`app/Madeira/Variant/JitNetworkAdvice.swift`, which is where these steps are
+written down once and read by the setup screen, the JIT failure message and the
+store's tool list):
+
+1. **Pair in Madeira** (iOS 27 and later, see *In-app pairing* above). The
+   pairing file is the replacement handshake: with one stored, the single tunnel
+   is enough again. This is the fix rather than a workaround, so the setup
+   screen offers it first on a device that supports it.
+2. **Two tunnels, in order**: connect an IKEv2/IPSec VPN first and then
+   LocalDevVPN. The order is load-bearing - the other way round leaves the route
+   uninstalled and looks exactly like doing nothing. IPv4 rather than IPv6 is
+   what the community reports as working. Apps reported to serve as the first
+   tunnel: Super Unlimited Proxy ("VPN Super"), hide.me VPN, AdGuard VPN.
+   Madeira has no relationship with any of them and names them only because
+   "connect another VPN" is not an instruction anyone can follow.
+3. **The Madeira JIT shortcut** (below), which performs the sequence for you.
+
 **Enable JIT** first checks the loopback directly
 (`app/Madeira/JITNetwork.swift`), in two steps that do not depend on what
 `lockdownd` says (over USB it answers a plain `QueryType`; through the tunnel it
@@ -241,6 +269,44 @@ Its steps, to make it by hand (name it exactly **Madeira JIT**):
 
 Then turn on **Settings → JIT → Madeira JIT shortcut**. Without the shortcut,
 leave it off: Shortcuts would only report that the shortcut is missing.
+
+## Why there is no interpreter for Windows programs
+
+An ARM64-only FEX build cannot fall back to interpreting x86. That is not a
+Madeira limitation and not a build flag that was missed: this FEX revision
+contains only the JIT path. Verified against the submodule at
+`08aca96b6d1184e2efbfaed23b532fa3f827f0d0`:
+
+- `FEXCore/Source/Interface/Core/Interpreter/` holds `InterpreterOps.h` and a
+  `Fallbacks/` directory of two files - `InterpreterFallbacks.cpp` and
+  `StringCompareFallbacks.cpp`. These are helpers the JIT calls for a handful of
+  instructions, not an interpreter.
+- `FEXCore/Source/CMakeLists.txt` compiles exactly those two files from that
+  directory, and the whole of `Interface/Core/JIT/` beside them.
+- `FEXCore/Source/Interface/Core/Core.cpp:528` sets
+  `Thread->CPUBackend = FEXCore::CPU::CreateArm64JITCore(this, Thread);` with no
+  condition and no alternative.
+- The submodule is shallow (`git rev-parse --is-shallow-repository` is `true`),
+  so there is no removed interpreter in the history to restore either.
+
+Writing one would mean an interpreter for roughly a thousand IR operations. A
+Linux machine does not need it: QEMU runs the whole guest, and QEMU's TCG has an
+interpreter configuration (`--enable-tcg-threaded-interpreter`, see
+`LinuxEngine.swift` and `.github/workflows/linux-engine.yml`) which is what UTM
+SE ships and what makes a guest work with no debugger attached.
+
+## LocalDevVPN troubleshooting
+
+If Enable JIT fails and the log says the loopback was not reached:
+
+1. Check `Settings → JIT` and follow the steps the device's own iOS version
+   shows. Before 26.4 that is "connect LocalDevVPN"; from 26.4 it is the
+   two-tunnel sequence above.
+2. Pairing is worth doing first on iOS 27 and later even if the two-tunnel
+   method works: a new pairing replaces the last, and the pairing route does not
+   need the second tunnel at all.
+3. The pairing file and the shortcut have nothing to do with each other. A
+   failure that names the pairing needs *Pair again*, not another VPN.
 
 ## Signing and installation
 

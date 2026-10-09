@@ -70,7 +70,10 @@ struct MadeiraShellView: View {
     var play: (LibraryEntry) -> Void
     var enableJIT: () -> Void
     @Binding var showClassic: Bool
-    @Binding var variant: AppVariant
+    /// The variant on screen. A value, not a binding: the shell reads it to
+    /// label itself and to tick the right row in Settings, and changes it
+    /// through `chooseVariant` so the write goes through one place.
+    var variant: AppVariant
     var chooseVariant: (AppVariant) -> Void
 
     @ObservedObject private var library = LibraryModel.shared

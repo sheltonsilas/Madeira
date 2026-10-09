@@ -174,6 +174,33 @@ def mirror_heavy(text):
     return text
 
 
+def mirror_typecheck(text):
+    """swift-typecheck.yml -> build host swift-typecheck.yml.
+
+    One job, one checkout, no inputs of its own. The push trigger goes: a push
+    to a repository that never contains the source cannot mean anything.
+    """
+    original_trigger = (
+        "on:\n"
+        "  workflow_dispatch:\n"
+        '  push:\n'
+        '    paths: ["app/**/*.swift"]\n'
+    )
+    assert original_trigger in text, "swift-typecheck.yml: the `on:` block moved; re-read it"
+    text = text.replace(
+        original_trigger,
+        "on:\n  workflow_dispatch:\n    inputs:\n" + source_input(),
+        1,
+    )
+
+    assert text.count(CHECKOUT_BARE) == 1, (
+        "swift-typecheck.yml: expected one bare checkout, found "
+        f"{text.count(CHECKOUT_BARE)}"
+    )
+    text = text.replace(CHECKOUT_BARE, pin("          ", "          ", "") + "\n")
+    return text
+
+
 def mirror_linux_engine(text):
     """linux-engine.yml -> build host linux-engine.yml.
 
@@ -188,6 +215,7 @@ MIRRORS = {
     "build.yml": mirror_build,
     "heavy.yml": mirror_heavy,
     "linux-engine.yml": mirror_linux_engine,
+    "swift-typecheck.yml": mirror_typecheck,
 }
 
 
