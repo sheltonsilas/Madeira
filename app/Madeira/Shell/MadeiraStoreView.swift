@@ -234,6 +234,7 @@ struct MadeiraSettingsView: View {
                 LabeledContent("Debugger", value: debuggerAttached ? "Attached" : "Not attached")
                 LabeledContent("QEMU core", value: LinuxEngineSupport.hasQEMUCore ? "Linked in" : "Not in this build")
                 LabeledContent("TCG interpreter", value: LinuxEngineSupport.hasTCGInterpreter ? "Built in" : "Not built in")
+                LabeledContent("Guest launcher", value: LinuxEngineSupport.hasLauncher ? "Present" : "Not written")
                 LabeledContent("Machines", value: "\(linux.environments.count)")
             } header: {
                 Text("This build")
@@ -277,7 +278,10 @@ struct MadeiraSettingsView: View {
 
     private var engineFooter: String {
         if !LinuxEngineSupport.hasQEMUCore {
-            return "No emulator core is linked into this build, so a Linux machine cannot start. Windows programs are unaffected: they run through FEX and Wine."
+            return "No emulator core is linked into this build, so a Linux machine cannot start. Windows programs are unaffected: they run through FEX and Wine. The engine build itself now succeeds - see the Linux engine notes in the repository - so this is the linking step, not the hard part."
+        }
+        if !LinuxEngineSupport.hasLauncher {
+            return "QEMU is linked in, and nothing here can start a machine with it yet: the launcher that turns a machine into QEMU's arguments, with a display and a serial console, is the part still to be written."
         }
         if !LinuxEngineSupport.hasTCGInterpreter {
             return "QEMU is linked in without its interpreter, so a Linux machine needs a debugger attached."

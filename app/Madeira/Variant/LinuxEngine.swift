@@ -32,13 +32,27 @@
 // to run the guest with the same engine UTM SE uses. That is what
 // `LinuxEnginePlan.resolve` below selects.
 //
-// WHAT IS NOT HERE YET, STATED PLAINLY
-// The QEMU core itself is not linked into this binary, so `hasQEMUCore` is
-// false and a launch stops with that sentence rather than pretending. The
-// engine choice, the catalogue, the download and the environment record below
-// are real; linking QEMU built for aarch64-apple-ios with both TCG
-// configurations is the remaining piece, and `linux-engine-qemu` in
-// .github/workflows/build.yml is where that build belongs.
+// WHAT IS AND IS NOT HERE, STATED PLAINLY
+// Three separate things have to be true before a machine can start, and they
+// were being reported as one. They are now three:
+//
+//   `hasQEMUCore`      QEMU for aarch64-apple-ios is linked into the binary.
+//                      `.github/workflows/linux-engine.yml` BUILDS it - the
+//                      JIT-less sysroot was produced on 2026-10-09, with
+//                      `libqemu-aarch64-softmmu.dylib` and the dependency
+//                      frameworks beside it - but the app does not yet link it,
+//                      so this is still false and the build job that changes
+//                      that is described in docs/LINUX_ENGINE.md.
+//   `hasTCGInterpreter` that QEMU was built with `--enable-tcg-interpreter`,
+//                      which the same workflow does pass for the TCI sysroot.
+//   `hasLauncher`      Madeira has code that starts a guest: the argument
+//                      vector, the display, the serial console, the stop. This
+//                      is the piece that does not exist, and it is the reason a
+//                      linked core would still not make a machine run.
+//
+// Keeping them apart is not bookkeeping. Reporting "no emulator core" when the
+// core is present and only the launcher is missing sends the reader to the
+// wrong file, and that is the failure mode this app was already in.
 
 import Foundation
 
@@ -116,6 +130,21 @@ enum LinuxEngineSupport {
         return false
         #endif
     }
+
+    /// True when the code that actually starts a guest is compiled in.
+    ///
+    /// Set by `MADEIRA_HAS_QEMU_LAUNCHER`, which belongs in the same place as
+    /// the other two but is not set by linking: it is set when the launcher
+    /// exists. Until then a machine says so in those words, because "the
+    /// emulator is missing" and "nothing here knows how to start the emulator"
+    /// are different problems with different fixes.
+    static var hasLauncher: Bool {
+        #if MADEIRA_HAS_QEMU_LAUNCHER
+        return true
+        #else
+        return false
+        #endif
+    }
 }
 
 /// The engine an environment will actually start under, and what stops it.
@@ -164,9 +193,22 @@ struct LinuxEnginePlan: Equatable {
                 kind: kind,
                 blocker: "No emulator core is linked into this build. A Linux guest is run by "
                     + "QEMU (the engine inside UTM), and this build does not contain it, so there "
-                    + "is nothing to start. The engine choice, the distribution catalogue and the "
-                    + "download below are real; the QEMU build is the part still missing.",
+                    + "is nothing to start. The engine itself now builds - see Linux engine in "
+                    + "the repository's docs - so what is missing is the step that links it in.",
                 jitWouldHelp: jitWouldHelp)
+        }
+
+        // Before the interpreter check, and deliberately: a missing launcher
+        // stops both engines, so offering "enable JIT" first would be advice
+        // that cannot work.
+        if !LinuxEngineSupport.hasLauncher {
+            return LinuxEnginePlan(
+                kind: kind,
+                blocker: "The emulator is linked into this build, but nothing here can start a "
+                    + "machine with it yet: the launcher - QEMU's arguments, its display and its "
+                    + "serial console - is not written. The engine choice, the distribution "
+                    + "image and this machine's settings are real.",
+                jitWouldHelp: false)
         }
 
         if kind == .utmSE && !LinuxEngineSupport.hasTCGInterpreter {

@@ -410,12 +410,16 @@ struct MadeiraHomeView: View {
 
     private var engineValue: String {
         if !LinuxEngineSupport.hasQEMUCore { return "Not linked" }
+        if !LinuxEngineSupport.hasLauncher { return "Linked, no launcher" }
         return LinuxEngineSupport.hasTCGInterpreter ? "JIT and JIT-less" : "JIT only"
     }
 
     private var engineDetail: String {
         if !LinuxEngineSupport.hasQEMUCore {
             return "This build has no emulator core, so a Linux machine cannot start yet."
+        }
+        if !LinuxEngineSupport.hasLauncher {
+            return "QEMU is in this build. Nothing here knows how to start a machine with it yet."
         }
         if LinuxEngineSupport.hasTCGInterpreter {
             return "Both QEMU configurations are built in."
