@@ -1212,6 +1212,21 @@ struct ContentView: View {
     /// built as when nothing has been chosen yet.
     private var variant: AppVariant { AppVariant.resolve(storedRawValue: storedVariant) }
 
+    /// Whether to open the classic screen instead of the shell.
+    ///
+    /// Persisted rather than per-launch: someone who prefers the old library
+    /// should not have to choose it again on every start.
+    @AppStorage("madeira.classicFrontScreen") private var classicFrontScreen = false
+
+    /// The shell is the front screen except while a guest is running.
+    ///
+    /// A session is full screen and the library's own HUD draws over the game
+    /// surface, so it keeps the interface it was built against. Everything else
+    /// - the machine lists, the store, the settings - is the shell.
+    private var usesShell: Bool {
+        !classicFrontScreen && !(library.enabled && library.current != nil)
+    }
+
     enum JITStatus {
         case unknown
         case testing
@@ -1221,6 +1236,57 @@ struct ContentView: View {
     }
 
     var body: some View {
+        Group {
+            if usesShell {
+                shellBody
+            } else {
+                classicBody
+            }
+        }
+    }
+
+    /// The interface this app now opens on.
+    ///
+    /// A view of ContentView's state rather than an owner of it: the launch path
+    /// and the JIT gate live here, so both are handed to the shell as closures.
+    /// See MadeiraShellView.swift for what it is and why it is not a reskin.
+    private var shellBody: some View {
+        MadeiraShellView(
+            play: launchLibraryEntry,
+            enableJIT: enableJIT,
+            showClassic: $classicFrontScreen,
+            variant: variant,
+            chooseVariant: { storedVariant = $0.rawValue }
+        )
+        .onAppear {
+            // MetalHostView is a window-level view drawn above the whole SwiftUI
+            // hierarchy, so it has to be hidden explicitly when no guest is
+            // running. The library front end does the same (Library.swift).
+            MetalHostView.shared.isHidden = true
+            startup()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            MetalHostView.shared.isHidden = true
+            library.refreshFlag()
+        }
+        // The first-run wizard and the JIT setup sheet are attached to the
+        // classic body too. Without them here, the shell would be the one screen
+        // where a new user is never told that nothing runs without a debugger.
+        .task {
+            if !jitOnboarded && !isDebuggerAttached() { showJitOnboarding = true }
+        }
+        .sheet(isPresented: $showJitOnboarding, onDismiss: { jitOnboarded = true }) {
+            JitOnboardingView()
+        }
+        .sheet(isPresented: $jitCoordinator.showSetup) { JITSetupView() }
+    }
+
+    /// The interface as it was before the shell: the library, the touch controls,
+    /// the joystick and the per-program settings.
+    ///
+    /// Reached from the shell's sidebar, and used automatically while a guest is
+    /// running. Nothing here was removed, and the toolbar carries a way back.
+    private var classicBody: some View {
         /* ml658: was NavigationView, which is deprecated and — the reason this
          * matters — defaults to a SPLIT VIEW on iPad. TARGETED_DEVICE_FAMILY is
          * "1,2", so iPad is a shipping target, and the whole UI was being forced
@@ -1263,6 +1329,15 @@ struct ContentView: View {
                         } label: {
                             Label(variant.displayName,
                                   systemImage: variant.symbol)
+                        }
+                    }
+                    // The way back. Without it, choosing the classic screen
+                    // would be a one-way door that survives a relaunch.
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            classicFrontScreen = false
+                        } label: {
+                            Label("New interface", systemImage: "square.grid.2x2")
                         }
                     }
                 }
@@ -1359,21 +1434,29 @@ struct ContentView: View {
                 library.refreshFlag()
                 if library.enabled && library.current == nil { MetalHostView.shared.isHidden = true }
             }
-            .onAppear {
-                jit_install_trap_handler()
-                entitlements = EntitlementStatus.check()
-                logEntitlementStatus()
-                logStore.log("[build] \(BuildStamp.text)")
-                DeviceDiagnostics.logStartup()
-                FrontendChoice.logStartup()
-                DeviceLoadDiagnostics.start()
-                // Madeira Dock: an unconsumed sign-in transfer from an earlier run goes.
-                if wine_process_is_running() == 0 { MadeiraDock.cleanup() }
-            }
+            .onAppear { startup() }
             .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in
                 if !SteamSignIn.isSignedIn { MadeiraDock.cleanup() }
             }
         }
+    }
+
+    /// The work that must happen once per launch, whichever front screen is up.
+    ///
+    /// Extracted from the classic body's `onAppear` so the shell runs it too:
+    /// the trap handler and the entitlement check are what make JIT possible at
+    /// all, and a launch that skipped them would look like a broken app rather
+    /// than a missing call.
+    private func startup() {
+        jit_install_trap_handler()
+        entitlements = EntitlementStatus.check()
+        logEntitlementStatus()
+        logStore.log("[build] \(BuildStamp.text)")
+        DeviceDiagnostics.logStartup()
+        FrontendChoice.logStartup()
+        DeviceLoadDiagnostics.start()
+        // Madeira Dock: an unconsumed sign-in transfer from an earlier run goes.
+        if wine_process_is_running() == 0 { MadeiraDock.cleanup() }
     }
 
     /// A library session: the game full screen in either orientation, with the

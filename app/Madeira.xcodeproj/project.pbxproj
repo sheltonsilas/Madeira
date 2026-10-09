@@ -77,6 +77,10 @@
 		A1000034 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000035 /* IOKit.framework */; };
 		A1000035 /* StikJITHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000036 /* StikJITHelper.swift */; };
 		B1000001 /* JITSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* JITSetup.swift */; };
+		D1000001 /* MadeiraComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000001 /* MadeiraComponents.swift */; };
+		D1000002 /* MadeiraShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000002 /* MadeiraShellView.swift */; };
+		D1000003 /* MadeiraMachinesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000003 /* MadeiraMachinesView.swift */; };
+		D1000004 /* MadeiraStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000004 /* MadeiraStoreView.swift */; };
 		C1000001 /* AppVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001 /* AppVariant.swift */; };
 		C1000010 /* LinuxEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000010 /* LinuxEngine.swift */; };
 		C1000011 /* LinuxImageDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000011 /* LinuxImageDownloader.swift */; };
@@ -263,6 +267,10 @@
 		A2000035 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		A2000036 /* StikJITHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StikJITHelper.swift; sourceTree = "<group>"; };
 		B2000001 /* JITSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JITSetup.swift; sourceTree = "<group>"; };
+		D2000001 /* MadeiraComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraComponents.swift; sourceTree = "<group>"; };
+		D2000002 /* MadeiraShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraShellView.swift; sourceTree = "<group>"; };
+		D2000003 /* MadeiraMachinesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraMachinesView.swift; sourceTree = "<group>"; };
+		D2000004 /* MadeiraStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraStoreView.swift; sourceTree = "<group>"; };
 		C2000001 /* AppVariant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVariant.swift; sourceTree = "<group>"; };
 		C2000010 /* LinuxEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxEngine.swift; sourceTree = "<group>"; };
 		C2000011 /* LinuxImageDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxImageDownloader.swift; sourceTree = "<group>"; };
@@ -482,6 +490,7 @@
 				B2000002 /* JITBuiltInHost.swift */,
 				B2000003 /* JITBuiltInMessages.swift */,
 				B2000040 /* JITPairing.swift */,
+				D3000001 /* Shell */,
 				C3000001 /* Variant */,
 				B2000042 /* MadeiraRPPairing.h */,
 				B2000004 /* madeira-jit.js */,
@@ -587,6 +596,17 @@
 				C2000008 /* LinuxEnvironmentPackager.swift */,
 			);
 			path = Variant;
+			sourceTree = "<group>";
+		};
+		D3000001 /* Shell */ = {
+			isa = PBXGroup;
+			children = (
+				D2000001 /* MadeiraComponents.swift */,
+				D2000002 /* MadeiraShellView.swift */,
+				D2000003 /* MadeiraMachinesView.swift */,
+				D2000004 /* MadeiraStoreView.swift */,
+			);
+			path = Shell;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -805,6 +825,10 @@
 				B1000002 /* JITBuiltInHost.swift in Sources */,
 				B1000003 /* JITBuiltInMessages.swift in Sources */,
 				B1000040 /* JITPairing.swift in Sources */,
+				D1000001 /* MadeiraComponents.swift in Sources */,
+				D1000002 /* MadeiraShellView.swift in Sources */,
+				D1000003 /* MadeiraMachinesView.swift in Sources */,
+				D1000004 /* MadeiraStoreView.swift in Sources */,
 				C1000010 /* LinuxEngine.swift in Sources */,
 				C1000011 /* LinuxImageDownloader.swift in Sources */,
 				C1000012 /* LinuxDistroOnboardingView.swift in Sources */,

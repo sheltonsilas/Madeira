@@ -98,14 +98,27 @@ jobs:
             || { echo "::error::madeira:// URL scheme not registered"; exit 1; }
           echo "JIT script + URL scheme present"
 
-      - name: The variant sources are in the Xcode target
+      - name: The variant and shell sources are in the Xcode target
         run: |
           set -euo pipefail
           for f in AppVariant JitManager MadeiraBrowserView WindowsInstallerBridge PointerMode LinuxEnvironmentStore JitOnboardingView; do
             grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
               || { echo "::error::$f.swift is not in the Sources phase"; exit 1; }
           done
-          echo "all Variant sources are compiled by the Madeira target"
+          for f in MadeiraComponents MadeiraShellView MadeiraMachinesView MadeiraStoreView; do
+            grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
+              || { echo "::error::$f.swift is not in the Sources phase; run tools/add_variant_files.py"; exit 1; }
+          done
+          echo "all Variant and Shell sources are compiled by the Madeira target"
+
+      - name: The Swift sources are not lopsided
+        # The files are edited on a machine with no Swift compiler, so the first
+        # compile of a change is a macOS runner away. A brace closed one time too
+        # many or too few is the most common way to spend that run on nothing:
+        # the compiler reports it as a cascade at the end of the file. This is
+        # not a parser and does not claim to be - see the script's own header -
+        # but it catches that, in a second, before the runner is spent.
+        run: python3 tools/check_swift_balance.py
 
       - name: The variant flag reaches the Swift compiler
         # Without the target-side setting, MADEIRA_VARIANT_FLAG is just a build

@@ -146,6 +146,18 @@ final class LinuxEnvironmentStore: ObservableObject {
 
     init() { load() }
 
+    /// Re-read the index from disk.
+    ///
+    /// Two screens can hold a store at once - the shell keeps one for its
+    /// machine list while the manager screen keeps another for editing - and
+    /// they write to the same file. Without this, a machine created in the
+    /// manager would not appear in the list behind it until the app restarted,
+    /// which looks exactly like the machine was not created.
+    func reload() {
+        load()
+        loadSnapshots()
+    }
+
     // MARK: CRUD
 
     func create(named name: String) throws -> LinuxEnvironment {
