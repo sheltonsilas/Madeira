@@ -120,6 +120,54 @@ jobs:
         # but it catches that, in a second, before the runner is spent.
         run: python3 tools/check_swift_balance.py
 
+      - name: The published source describes exactly one app
+        # `tools/make_source.py --linux-ipa` still exists, and passing it puts a
+        # second app back into the SideStore source under the old bundle id
+        # com.willfaust.madeora.linux. That app cannot be updated by the unified
+        # binary - different bundle id - so every install of it is orphaned the
+        # day the unified app ships. The publish job no longer passes the flag;
+        # this keeps it that way, because one word in a shell line would bring
+        # the orphan back and nothing else would notice.
+        run: |
+          set -euo pipefail
+          # Only the publish job is searched, for two reasons that both bit
+          # earlier versions of this check. The flag is named in a comment on
+          # the publish step and in this step's own source, so a plain grep over
+          # the file matches prose and then matches itself; and this step lives
+          # in a job ABOVE publish, so starting the search at "publish:" leaves
+          # the guard out of its own input by construction. Comment lines are
+          # dropped, which is what removes the publish step's explanation of why
+          # it does not pass the flag.
+          needle="--linux""-ipa"
+          if sed -n '/^  publish:/,$p' .github/workflows/build.yml \
+             | grep -v '^[[:space:]]*#' \
+             | grep -q -- "$needle"; then
+            echo "::error::the publish step passes $needle, which puts a second app"
+            echo "::error::into the SideStore source under a bundle id the unified binary"
+            echo "::error::cannot update. Remove the flag."
+            exit 1
+          fi
+          echo "the publish step ships one app"
+          head -c 4096 /dev/urandom > /tmp/dummy.ipa
+          python3 tools/make_source.py \
+            --out /tmp/source.json \
+            --windows-ipa /tmp/dummy.ipa \
+            --base-url https://example.invalid \
+            --version 0.0
+          python3 - <<'PY'
+          import json, sys
+          source = json.load(open('/tmp/source.json'))
+          apps = source.get('apps', [])
+          if len(apps) != 1:
+              print(f"::error::the source describes {len(apps)} apps, expected 1")
+              sys.exit(1)
+          bundle = apps[0].get('bundleIdentifier')
+          if bundle != 'com.willfaust.madeora':
+              print(f"::error::the app's bundle id is {bundle}, not com.willfaust.madeora")
+              sys.exit(1)
+          print(f"source describes one app: {apps[0]['name']} {apps[0]['version']} ({bundle})")
+          PY
+
       - name: The variant flag reaches the Swift compiler
         # Without the target-side setting, MADEIRA_VARIANT_FLAG is just a build
         # setting nobody reads and the "Linux" job quietly ships a second
