@@ -46,6 +46,40 @@
 # warns that `libusb`, `gawk` and `cmake` break the build when installed - and
 # macOS runners ship some of them. When it fails, read the first error rather
 # than the last, and pin or hide the offending package.
+#
+# FIVE RUNS IN, THIS IS WHAT HAS ACTUALLY FAILED, IN ORDER. Each line is a
+# dependency the previous run revealed, which is the only reason to keep a log
+# here at all:
+#
+#   1  pip3 install six pyparsing
+#         error: externally-managed-environment. Homebrew's python3 is PEP 668
+#         managed. Fixed by PIP_BREAK_SYSTEM_PACKAGES=1.
+#   2  'setuptools' not found in your Python 3 installation
+#         Homebrew's python3 no longer ships distutils. Fixed by installing
+#         setuptools.
+#   3  'pyyaml' not found
+#         Fixed by installing UTM's whole check_env list at once, so the checks
+#         stop costing a full job cycle each. Also fixed the artifact path:
+#         UTM names the directory sysroot-*, not Sysroot-*.
+#   4  meson.build:2092:18: ERROR: Dependency "SPIRV-Tools" not found
+#         spirv-llvm-translator is not spirv-tools. Fixed with brew spirv-tools
+#         and spirv-headers.
+#   5  src/kosmickrisp/bridge/mtl_argument_table.m:9:10: fatal error:
+#      'Metal/MTL4ArgumentTable.h' file not found
+#         This one is not a missing package, it is a missing SDK. KosmicKrisp is
+#         Mesa's Vulkan-on-Metal driver, upstream Mesa grew a dependency on
+#         Apple's Metal 4 headers, and Metal 4 ships with the Xcode 26 SDK. The
+#         runner is on Xcode 16.4 (iPhoneOS 18.5 / MacOSX 15), so the header is
+#         simply not there. UTM knows about this - its own script has a branch
+#         with the comment "KosmicKrisp requires Metal 4 which the simulator
+#         SDKs do not provide" - but that branch only covers simulators, and a
+#         device build takes the other one.
+#         The fix is not to find the header. It is to stop building the piece
+#         that wants it. See the `Drop the GPU drivers` step.
+#
+# Note the shape of #5: four runs of chasing packages, and the fifth is a
+# different kind of problem that no package can solve. When the next failure
+# looks unlike the previous four, that is the signal to stop adding packages.
 
 name: linux-engine
 
@@ -144,6 +178,75 @@ jobs:
           # Show the versions this revision will actually build, so a failure
           # downstream can be attributed without guessing.
           grep -E '^(QEMU_SRC|PIXMAN_SRC|SLIRP_SRC)=' patches/sources || true
+
+      - name: Drop the GPU drivers that need an SDK we do not have
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          # WHAT THIS REMOVES, AND WHY IT IS SAFE TO REMOVE
+          # UTM's script has three steps at the end that build graphics drivers:
+          #
+          #   build_spice_client     a display client                  KEPT
+          #   build_vulkan_drivers   Mesa/KosmicKrisp + MoltenVK      REMOVED
+          #   build_d3d_drivers      DXMT + a second LLVM             REMOVED
+          #
+          # `fixup_all` and `remove_shared_gst_plugins` still run after them, in
+          # that order, untouched.
+          # They run AFTER `build $QEMU_DIR`, which is the line that produces the
+          # QEMU libraries this job exists to produce. Nothing built before them
+          # can depend on them, so removing them cannot change what QEMU
+          # compiles to. `build_mesa_host` is only ever called from
+          # build_vulkan_drivers, and that call is the exact compile that failed
+          # run 5 - so removing the call removes the failure and not a dependency
+          # of the thing we want.
+          #
+          # WHAT IS LOST: GPU acceleration inside a guest. KosmicKrisp is
+          # Vulkan-on-Metal and DXMT is Direct3D-on-Metal; neither is reachable
+          # from a Linux guest running under TCG's interpreter, which draws
+          # through QEMU's own framebuffer. MoltenVK's ICD registration goes with
+          # them. This is the same trade UTM SE makes: no GPU, and it runs on a
+          # stock iPad. Vulkan support that *is* needed to build QEMU -
+          # virglrenderer, the Vulkan loader, epoxy, ANGLE - is built earlier by
+          # build_qemu_dependencies and is untouched here.
+          #
+          # The second reason is cost. Mesa's host build, DXMT and the LLVM 15 it
+          # needs took the better part of fifteen minutes of run 5, and this job
+          # has to be re-run several times yet.
+          #
+          # WHY A PATCH RATHER THAN A DIFFERENT UTM REVISION: patches/ travels
+          # with the revision, and the revision is pinned so the build is
+          # reproducible. Editing a script inside the runner keeps that promise
+          # and keeps the reason next to the edit.
+          python3 - <<'PY'
+          import pathlib
+
+          script = pathlib.Path("scripts/build_dependencies.sh")
+          text = script.read_text()
+
+          # The call sites, matched exactly, with the assertions below. A silent
+          # no-op here would cost another 45 minutes, so it fails loudly instead.
+          removed = [
+              "build_vulkan_drivers\n",
+              "build_d3d_drivers\n",
+          ]
+          for line in removed:
+              if line not in text:
+                  raise SystemExit(
+                      f"linux-engine: {line.strip()!r} is not in "
+                      "scripts/build_dependencies.sh at this revision. The patch "
+                      "would do nothing, which is worse than failing: UTM changed "
+                      "and the step above must be re-read against the new script."
+                  )
+              text = text.replace(line, "# Removed for Madeira: " + line)
+
+          script.write_text(text)
+
+          # Read back what the next step will actually execute, so the log shows
+          # the patched file and not the intention to patch it.
+          for line in pathlib.Path("scripts/build_dependencies.sh").read_text().splitlines():
+              if "Removed for Madeira" in line:
+                  print("patched:", line)
+          PY
 
       - name: Build the JIT-less sysroot (ios-tci-arm64)
         if: ${{ inputs.targets != 'jit-only' }}
