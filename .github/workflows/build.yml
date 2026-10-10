@@ -172,9 +172,16 @@ jobs:
         # Without the target-side setting, MADEIRA_VARIANT_FLAG is just a build
         # setting nobody reads and the "Linux" job quietly ships a second
         # Windows build. That defect existed once; this keeps it gone.
+        #
+        # Matched by prefix, not by the whole line, because the line now carries a
+        # second forwarding ($(MADEIRA_ENGINE_FLAGS)) and pinning the full string
+        # here made this check fail on a correct project - twice, once for each
+        # edit. The prefix is what this step is about: the variant flag has to be
+        # the FIRST thing after $(inherited), and the rest of the line is checked
+        # by tools/add_engine_embed.py, which owns it.
         run: |
           set -euo pipefail
-          grep -q 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(MADEIRA_VARIANT_FLAG)"' \
+          grep -q 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(MADEIRA_VARIANT_FLAG)' \
             app/Madeira.xcodeproj/project.pbxproj \
             || { echo "::error::MADEIRA_VARIANT_FLAG is not forwarded to Swift"; exit 1; }
           grep -q 'MADEIRA_VARIANT_FLAG=' .github/workflows/build.yml \
