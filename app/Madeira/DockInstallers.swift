@@ -568,7 +568,18 @@ enum DockInstallers {
         return machine == 0x14c && !has32Bit ? "32-bit installer" : nil
     }
 
-    nonisolated static var bundleHas32Bit: Bool { bundled("i386-windows") }
+    /// Whether this build can run a 32-bit x86 program at all.
+    ///
+    /// `i386-windows/ntdll.dll`, not the directory. The directory is a folder
+    /// reference in the target and is tracked with a .gitkeep, so it is present
+    /// in every build - including the builds made before the payloads workflow
+    /// has ever run, when it holds nothing but that .gitkeep. Answering true
+    /// there made this file promise a 32-bit installer could run while Wine had
+    /// no syswow64 to load, which is the same claim the launch path refuses to
+    /// make: docs/WOW64.md, "a bundle without i386-windows/ntdll.dll never treats
+    /// a target as 32-bit". The two must agree, and ntdll is the file that
+    /// decides it.
+    nonisolated static var bundleHas32Bit: Bool { bundled("i386-windows/ntdll.dll") }
     nonisolated static var bundleHasMsiexec: Bool {
         ["aarch64-windows", "arm64ec-windows", "i386-windows"].contains { bundled($0 + "/msiexec.exe") }
     }

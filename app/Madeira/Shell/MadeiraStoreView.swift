@@ -235,6 +235,14 @@ struct MadeiraSettingsView: View {
                 LabeledContent("QEMU core", value: LinuxEngineSupport.hasQEMUCore ? "Linked in" : "Not in this build")
                 LabeledContent("TCG interpreter", value: LinuxEngineSupport.hasTCGInterpreter ? "Built in" : "Not built in")
                 LabeledContent("Guest launcher", value: LinuxEngineSupport.hasLauncher ? "Present" : "Not written")
+                // The 32-bit Windows farm is a payload like the engine: a build
+                // either shipped it or did not, and that is the whole explanation
+                // for a 32-bit setup program that will not start. Read from the
+                // same answer the install path uses (DockInstallers.bundleHas32Bit)
+                // rather than a second copy of the check, so this row cannot
+                // promise something the launcher will refuse.
+                LabeledContent("32-bit Windows",
+                               value: DockInstallers.bundleHas32Bit ? "Supported" : "Not in this build")
                 LabeledContent("Machines", value: "\(linux.environments.count)")
             } header: {
                 Text("This build")
