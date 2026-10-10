@@ -77,7 +77,7 @@ enum JITOffReason: Equatable {
     var explanation: String {
         switch self {
         case .notDebuggable:
-            return "This build is not signed as debuggable (no get-task-allow entitlement), so iOS will not let it create executable memory. Re-sign it with Sideloadly or SideStore and keep the entitlements."
+            return "This build is not signed as debuggable (no get-task-allow entitlement), so iOS will not let it create executable memory. Re-sign it with a sideloader that keeps the entitlements."
         case .helperMissing:
             return "The JIT helper extension was not installed. Your sideloader probably dropped app extensions - re-install and choose to keep them."
         case .debuggerNotAttached:

@@ -170,7 +170,7 @@ struct JitOnboardingView: View {
                 title: "Signed as debuggable",
                 detail: jit.debuggableSignature
                     ? "OK. The app carries get-task-allow."
-                    : "Missing. iOS will not allow executable memory. Re-sign with Sideloadly or SideStore.",
+                    : "Missing. iOS will not allow executable memory. Re-sign with a sideloader that keeps the entitlements.",
                 state: jit.debuggableSignature ? .ok : .todo("re-sign")),
             JITPrerequisite(
                 id: "helper",
@@ -233,9 +233,12 @@ struct JitOnboardingView: View {
         Section("Other ways to sign and enable JIT") {
             // Each of these is a real, documented route. The brief asked for
             // them to be supported and described, not to be reimplemented.
-            LabeledContent("SideStore") {
-                Text("Refreshes over Wi-Fi, so no weekly re-signing").foregroundStyle(.secondary)
-            }
+            //
+            // The SideStore row that used to open this list is gone on purpose.
+            // It is one sideloader among several, this app is not in its store,
+            // and naming it in the UI made the first prerequisite look like it
+            // required that one tool. Any sideloader that keeps app extensions
+            // does the same job.
             LabeledContent("AltStore") {
                 Text("Sideloader; keep app extensions when asked").foregroundStyle(.secondary)
             }

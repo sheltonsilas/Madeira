@@ -5,28 +5,27 @@
 //
 // WHY THERE IS A STORE TAB IN AN APP WITH NO STORE
 // Because the honest answer to "how do I get a program in here" is a chain of
-// four other tools, and until now it was spread across a setup guide, a
-// settings sheet and a launch error. SideStore installs the app and re-signs it
-// every seven days; StikDebug (or Madeira's own built-in helper) attaches the
-// debugger that turns JIT on; LocalDevVPN is how the debugger reaches the
-// device. All four are separate downloads and all four have to be right before
-// anything runs.
+// other tools, and until now it was spread across a setup guide, a settings
+// sheet and a launch error. Something has to sign and install the app with the
+// user's own Apple ID and re-sign it every seven days; StikDebug (or Madeira's
+// own built-in helper) attaches the debugger that turns JIT on; LocalDevVPN is
+// how the debugger reaches the device. All of them are separate downloads and all
+// of them have to be right before anything runs.
 //
 // So this screen states the chain, checks which links are present, and links to
 // the ones that are not. It does not pretend to install them: an app store
 // listing is not something a sandboxed app can act on.
+//
+// It also names no particular sideloader any more, and that is deliberate. It
+// used to carry a card with a SideStore source URL and a sideStore:// detection
+// row, pointing at sheltonsilas/Madeira - a repository whose Actions are
+// disabled, so the releases that URL resolves to do not exist. A screen whose
+// first instruction cannot work is worse than one that says what the step is.
 
 import SwiftUI
 
 /// The install path and the tools it needs.
 struct MadeiraStoreView: View {
-    @State private var copied = false
-
-    /// The side-loading source. `latest/download` rather than a tag, so the URL
-    /// keeps working after the next build: a source URL that pins a tag stops
-    /// offering updates the day after it is written.
-    private let sourceURL = "https://github.com/sheltonsilas/Madeira/releases/latest/download/source.json"
-
     var body: some View {
         List {
             Section {
@@ -43,45 +42,13 @@ struct MadeiraStoreView: View {
             }
 
             Section("How it works") {
-                step(1, "Install Madeira", "SideStore installs and re-signs it. Without a paid developer account a signature lasts seven days; SideStore refreshes it before it expires.")
+                step(1, "Install Madeira", "Signed in with your own Apple ID, by any sideloader or by Xcode. Without a paid developer account a signature lasts seven days, and whichever tool installed it has to refresh it before it expires.")
                 step(2, "Turn on JIT", "Either StikDebug, or Madeira's own helper. Both attach a debugger, which is the only way iOS grants an app executable memory.")
                 step(3, "Bring a program", "Download an .exe or .msi in the browser from the classic screen. It installs into the same Wine prefix the program list runs from.")
                 step(4, "Start a Linux machine", "Or skip Windows entirely: a machine is a distribution image and a disk, downloaded and checked from this app.")
             }
 
             Section {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.down.app")
-                        .foregroundStyle(MadeiraTheme.accent)
-                    Text(sourceURL)
-                        .font(MadeiraTheme.mono())
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                Button {
-                    UIPasteboard.general.string = sourceURL
-                    copied = true
-                } label: {
-                    Label(copied ? "Copied" : "Copy the SideStore source URL", systemImage: copied ? "checkmark" : "doc.on.doc")
-                }
-                Button {
-                    if let url = URL(string: sourceURL) { UIApplication.shared.open(url) }
-                } label: {
-                    Label("Open the source JSON", systemImage: "safari")
-                }
-            } header: {
-                Text("SideStore source")
-            } footer: {
-                Text("Paste this into SideStore › Sources › +. SideStore then offers an update here on every new build, and re-signs it for you.")
-                    .font(MadeiraTheme.caption())
-            }
-
-            Section {
-                tool(
-                    name: "SideStore",
-                    scheme: "sidestore://",
-                    detail: "Installs and re-signs this app without a computer."
-                )
                 tool(
                     name: "StikDebug",
                     scheme: "stikdebug://",
@@ -101,7 +68,7 @@ struct MadeiraStoreView: View {
             } header: {
                 Text("Tools on this device")
             } footer: {
-                Text("A tool Madeira cannot see is one it cannot use. Detection is by URL scheme, so a tool that is installed but has no scheme registered will show as absent.")
+                Text("These are the tools Madeira itself needs, not the one that installed it: any sideloader works, so none is named here. Detection is by URL scheme, so a tool that is installed but has no scheme registered will show as absent.")
                     .font(MadeiraTheme.caption())
             }
 
@@ -275,7 +242,7 @@ struct MadeiraSettingsView: View {
                 LabeledContent("Storage", value: "Documents/environments")
                 LabeledContent("Licence", value: "GPL-3.0-or-later")
             } footer: {
-                Text("Madeira includes Wine, FEX-Emu, QEMU, DXMT and StikJIT. Their notices are in the app's licences, and the source for this build is in the repository named on the SideStore source.")
+                Text("Madeira includes Wine, FEX-Emu, QEMU, DXMT and StikJIT. Their notices are in the app's licences, and the source for this build is in this project's GitHub repository.")
                     .font(MadeiraTheme.caption())
             }
         }
@@ -294,6 +261,10 @@ struct MadeiraSettingsView: View {
         if !LinuxEngineSupport.hasTCGInterpreter {
             return "QEMU is linked in without its interpreter, so a Linux machine needs a debugger attached."
         }
-        return "QEMU is linked in with both configurations, so a Linux machine runs whether or not a debugger is attached."
+        // The sysroot that ships is the interpreter one, so "both" would be a
+        // claim about a configuration that is not in this bundle: there is no JIT
+        // build being linked, and the engine the app will actually use is the one
+        // this sentence names.
+        return "The interpreter engine is embedded and a launcher is present, so a Linux machine runs whether or not a debugger is attached."
     }
 }

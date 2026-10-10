@@ -3558,7 +3558,7 @@ struct SetupGuideView: View {
                 }
 
                 Section("Setup Steps") {
-                    stepRow(number: 1, text: "Install Madeira via SideStore or Xcode")
+                    stepRow(number: 1, text: "Install Madeira with Xcode or any sideloader")
                     stepRow(number: 2, text: "Install GetMoreRam and run it to inject memory entitlements into your App ID")
                     stepRow(number: 3, text: "Reinstall Madeira with the same IPA to apply injected entitlements")
                     stepRow(number: 4, text: "In StikDebug, assign the 'universal' JIT script to Madeira and launch it")
