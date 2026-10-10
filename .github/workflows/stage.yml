@@ -1,0 +1,262 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# One stage at a time, on demand. Editor's note: this exists because a full
+# build.yml run costs 10-40 minutes, and a 45-minute session cannot afford
+# several of those to find one compile error. Pick a stage from the dropdown.
+#
+# It shares the toolchain cache with build.yml, so the 614 MB LLVM tarball is
+# downloaded once and reused.
+
+name: stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Which native stage to build"
+        type: choice
+        required: true
+        default: fex-ios
+        options:
+          - llvm-headers
+          - gnutls-ios
+          - ffmpeg
+          - fex-ios
+          - wine-macos
+          - wine-unix
+          - ntdll-unix
+          - wineserver
+          - win32u-unix
+          - wine-pe
+          - wine-pe-universal
+          - dxmt-ios
+          - rppairing-ios
+          - xcodebuild
+      runner:
+        description: "Runner image"
+        type: string
+        default: macos-15
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select an Xcode with the iOS 26 SDK
+        # The image's default Xcode is too old: DXMT's winemetal_unix.c calls
+        # MTLFXFrameInterpolatorDescriptor, which only exists from the iOS 26
+        # SDK, and the Metal toolchain moved out of the box in Xcode 26.
+        run: bash build/ci/select-xcode.sh
+
+      - name: Cache the toolchain inputs
+        uses: actions/cache@v4
+        with:
+          # The path list is part of a cache's identity (actions/cache hashes it
+          # into the cache version), so this must stay identical to heavy.yml's
+          # or the llvm-ios-* cache is invisible however the keys are written:
+          # build.yml listed `toolchains` and its log said "Cache not found for
+          # input keys: ..., llvm-ios-" on every run, which is why nothing but a
+          # fallback headers-only download ever appeared. llvm-ios- is in the
+          # restore keys here for the same reason it is there.
+          path: |
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-bin
+            toolchains/llvm-project
+          key: toolchain-stage-${{ inputs.stage }}
+          restore-keys: |
+            toolchain-stage-
+            llvm-ios-
+
+      - name: Fetch llvm-mingw
+        if: ${{ inputs.stage == 'wine-macos' || inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' || inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          tarball=toolchains/llvm-mingw.tar.xz
+          [ -f "$tarball" ] || curl -fSL "$url" -o "$tarball"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $tarball" | shasum -a 256 -c -
+          [ -d toolchains/llvm-mingw-20260421-ucrt-macos-universal ] || tar -xJf "$tarball" -C toolchains
+
+      - name: Provide LLVM headers
+        if: ${{ inputs.stage == 'llvm-headers' || inputs.stage == 'dxmt-ios' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # For dxmt-ios the llvm-mingw step that normally creates this
+          # directory is skipped, and a cache miss means actions/cache creates
+          # nothing either, so curl fails with "No such file or directory".
+          mkdir -p toolchains
+          VERSION=15.0.7
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
+            | python3 -c "
+          import json,platform,sys
+          arch='arm64' if platform.machine() in ('arm64','aarch64') else 'x86_64'
+          for a in json.load(sys.stdin).get('assets',[]):
+              n=a['name']
+              if n.endswith('.tar.xz') and arch in n and 'darwin' in n:
+                  print(a['browser_download_url']); break
+          " || true)
+          test -n "$url" || { echo "::error::no LLVM $VERSION darwin tarball found"; exit 1; }
+          tarball="toolchains/llvm-$VERSION.tar.xz"
+          [ -f "$tarball" ] || curl -fSL --retry 3 "$url" -o "$tarball"
+          root=$(tar -tJf "$tarball" 2>/dev/null | sed -n '1s|/.*||p')
+          test -n "$root" || { echo "::error::could not read the tarball index"; exit 1; }
+          rm -rf /tmp/llvmx toolchains/llvm-ios-build
+          mkdir -p /tmp/llvmx toolchains/llvm-ios-build toolchains/llvm-project
+          tar -xJf "$tarball" -C /tmp/llvmx "$root/include"
+          mv "/tmp/llvmx/$root/include" toolchains/llvm-ios-build/include
+          test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h \
+            || { echo "::error::llvm-config.h missing"; exit 1; }
+          mkdir -p toolchains/llvm-project/llvm
+          ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
+          echo "LLVM headers ready"
+
+      - name: Preconditions for the Wine stages
+        if: ${{ inputs.stage == 'wine-macos' || inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' || inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # Every iOS unix-side script force-includes
+          # wine/build-macos/include/config.h, so that tree has to exist before
+          # any of them runs. It is not tracked in git and nothing else created
+          # it, which is why 36 of 37 objects in the first run here failed on
+          # the missing header.
+          bash build/wine-macos/build.sh
+
+      - name: Preconditions for the Wine unix-side libraries
+        if: ${{ inputs.stage == 'wine-unix' || inputs.stage == 'ntdll-unix' || inputs.stage == 'wineserver' || inputs.stage == 'win32u-unix' }}
+        run: |
+          # Three of these objects compile against headers another build produces:
+          #   winegstreamer_unixlib_ios.c needs libavcodec/avcodec.h (build/ffmpeg)
+          #   dwrite_freetype_ios.c needs ft2build.h           (build/freetype-ios)
+          #   bcrypt/secur32/crypt32 unixlibs need gnuctls.h    (build/gnutls-ios)
+          # build.yml runs all three earlier in its chain, so only a single-stage
+          # run has to bring them up. Without this the stage reports two objects
+          # missing with "file not found", which reads like a source fault.
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/freetype-ios/build.sh
+
+      - name: Preconditions for the Wine PE stages
+        if: ${{ inputs.stage == 'wine-pe' || inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # The PE stages need the unix side built first.
+          #
+          # ntdll-unix compiles dwrite_freetype_ios.c against freetype's
+          # headers and the crypto unixlibs against gnutls's, so this step
+          # needs those two as well as the unix side itself. build.yml runs
+          # them earlier in its chain; a single-stage run has to bring them
+          # up here, or dwrite fails on a missing ft2build.h and the error
+          # points at Wine's source rather than at a missing prerequisite.
+          #
+          # There is deliberately no assertion that wine/build-arm64ec is
+          # configured here. One used to sit at the end of this step on the
+          # belief that building ntdll configures that tree. It does not:
+          # build/ntdll-unix builds the unix side against wine/build-macos,
+          # and wine/build-arm64ec is configured by build/wine-pe/
+          # build-ntdll.sh, which is the stage this step precedes. The
+          # assertion could therefore only ever fail, and it did.
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/freetype-ios/build.sh
+          bash build/ntdll-unix/build.sh
+
+      - name: Configure the arm64ec Wine tree for the PE stages
+        if: ${{ inputs.stage == 'wine-pe-universal' }}
+        run: |
+          # build-universal.sh needs wine/build-arm64ec to exist and refuses to
+          # run without it ("Run build/wine-pe/build-ntdll.sh first"). Running
+          # the whole ntdll script here just to configure the tree would also
+          # rebuild and re-strip ntdll.dll for nothing.
+          #
+          # The configure flags come from the shared script rather than being
+          # repeated here. This step used to carry its own copy of the
+          # configure line and it had drifted from build-ntdll.sh's, so a
+          # stage run built a different tree than a full build.yml run.
+          bash build/wine-pe/configure-arm64ec.sh "$PWD"
+
+      - name: What the stage needs from the toolchains directory
+        if: ${{ inputs.stage == 'dxmt-ios' || inputs.stage == 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          # dxmt-ios/combine.sh merges libdxmt_unix.a with LLVM's iOS archives,
+          # and the app links the merge, so compiling alone is not enough. This
+          # ran after the headers-only fallback for a long time and the failure
+          # surfaced 30 minutes later inside combine.sh, where it read like a
+          # DXMT fault. Say it here instead, in front of the stage that needs it.
+          lib=toolchains/llvm-ios-build/lib
+          n=$(ls "$lib"/libLLVM*.a 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$n" -gt 0 ]; then
+            echo "$n LLVM-for-iOS archives in $lib"
+          else
+            echo "::error::$lib has no libLLVM*.a - run the llvm-ios workflow (about an hour) and re-run this stage"
+            exit 1
+          fi
+
+      - name: Run the stage
+        if: ${{ inputs.stage != 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          case "${{ inputs.stage }}" in
+            llvm-headers) echo "headers only; nothing to build" ;;
+            wine-pe) bash build/wine-pe/build-ntdll.sh ;;
+            wine-pe-universal) bash build/wine-pe/build-universal.sh ;;
+            # All three app-side Wine libraries in one go: they share the
+            # wine/build-macos tree, so testing them apart would pay that
+            # configure three times.
+            wine-unix)
+              bash build/ntdll-unix/build.sh
+              bash build/wineserver/build.sh
+              bash build/win32u-unix/build.sh
+              ;;
+            *) bash "build/${{ inputs.stage }}/build.sh" ;;
+          esac
+
+      - name: Try to link the app
+        if: ${{ inputs.stage == 'xcodebuild' }}
+        run: |
+          set -euo pipefail
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/fex-ios/build.sh
+          bash build/wine-macos/build.sh
+          bash build/ntdll-unix/build.sh
+          bash build/wineserver/build.sh
+          bash build/win32u-unix/build.sh
+          bash build/dxmt-ios/build.sh
+          bash build/dxmt-ios/combine.sh
+          bash build/rppairing-ios/build.sh
+          # The project references this folder in its Resources phase, and a
+          # folder reference that does not exist is a hard build error, not a
+          # warning. build.yml fills it from the VCREDIST_B64 secret; here an
+          # empty directory is enough to link.
+          mkdir -p app/Madeira/x86_64-vcruntime
+          xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
+            -configuration Debug -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+      - name: Show what the stage produced
+        if: always()
+        run: |
+          echo "=== toolchains ==="; ls -la toolchains 2>/dev/null | head -20
+          echo "=== iOS static libs the app links ==="
+          for f in app/Madeira/libntdll_unix.a app/Madeira/libwineserver.a \
+                   app/Madeira/libwin32u_unix.a app/Madeira/libdxmt_combined.a \
+                   app/Madeira/libmadeira_rppairing.a app/Madeira/libgnutls.a \
+                   app/Madeira/libavformat.a FEX/build-ios/FEXCore/Source/libFEXCore.a; do
+            [ -f "$f" ] && echo "  ok      $f ($(du -h "$f" | cut -f1))" || echo "  absent  $f"
+          done
+          echo "=== arm64ec farm general-purpose check ==="
+          for f in gdiplus.dll msi.dll explorer.exe cmd.exe msiexec.exe services.exe; do
+            [ -f "app/Madeira/arm64ec-windows/$f" ] && echo "  ok      $f" || echo "  MISSING $f"
+          done

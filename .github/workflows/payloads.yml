@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# payloads.yml - build the pieces the app ships but cannot build itself.
+#
+# WHY A SEPARATE WORKFLOW
+# The app build (build.yml) must stay at roughly its current length, and the two
+# payloads below are long. Both are pure functions of a pinned submodule
+# revision, so they are built once here, published as assets of one rolling
+# release (tag `payloads`), and downloaded by build.yml through
+# build/ci/fetch-payload.sh. Nothing about them runs on a normal app build.
+#
+# DISPATCH ONLY, for the same reason linux-engine.yml is: a payload failure must
+# not be able to turn an app build red, and the app build is what produces the
+# IPA.
+#
+# WHY A RELEASE AND NOT A WORKFLOW ARTIFACT
+# actions/download-artifact@v4 can now cross repositories, but only with a token
+# that can read the producing repository's actions - which a fork's GITHUB_TOKEN
+# is not. A public release asset is a plain HTTPS GET, so the app build can
+# consume it from wherever it runs.
+#
+# THE TWO PAYLOADS
+#
+#   i386-windows.tar.gz        app/Madeira/i386-windows/ - the 32-bit Windows
+#                              farm (docs/WOW64.md, "Building"). WITHOUT THIS a
+#                              32-bit x86 Windows program cannot start at all:
+#                              a 32-bit setup .exe (Chrome's small online
+#                              installer, Claude's Squirrel bootstrapper, most
+#                              one-time game installers) has no syswow64 to
+#                              load, and the launch dies before its first
+#                              instruction. The 64-bit half of WoW64 - wow64.dll
+#                              and wow64win.dll, and FEX's xtajit.dll - is
+#                              already tracked in app/Madeira/aarch64-windows/;
+#                              this is the missing half.
+#
+#   qemu-ios-tci-arm64.tar.gz  the JIT-less QEMU sysroot (docs/LINUX_ENGINE.md).
+#                              Built by linux-engine.yml, which publishes it to
+#                              the same `payloads` release itself.
+#
+# EXPECT THE FARM TO FAIL THE FIRST FEW TIMES. build/wine-i386/build.sh has
+# never been run on macOS: its own header says so. It is the macOS translation
+# of a WSL script, and 717 Wine modules is a lot of surface for a translation
+# error. When it fails, read the FIRST error, not the last - the module loop
+# uses `make -k`, so one broken module produces hundreds of lines of fallout and
+# then a tidy summary. The failing modules are printed as `FAIL <target>` lines
+# before the exit; that list is the thing to look at.
+
+name: payloads
+
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        # One option, because this workflow builds one thing. The QEMU sysroot is
+        # the other payload and it is published by linux-engine.yml, which is the
+        # workflow that already builds it; an input here for it would either have
+        # to trigger that workflow or do nothing when chosen, and an option that
+        # silently does nothing is worse than no option. This used to offer
+        # `qemu-sysroot` and `both`, and nothing consumed either.
+        description: "Which payload to build and publish (see docs/PAYLOADS.md)"
+        type: choice
+        options:
+          - i386-farm
+        default: "i386-farm"
+
+permissions:
+  # Required to create the rolling release and upload assets.
+  contents: write
+
+jobs:
+  i386-farm:
+    name: 32-bit Windows farm (i386-windows)
+    if: ${{ inputs.what == 'i386-farm' }}
+    runs-on: macos-15
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Say what this produces
+        run: |
+          cat <<'TXT'
+          Building the 32-bit (i386) Windows farm: app/Madeira/i386-windows/.
+
+          This is the syswow64 half of Wine's WoW64 layer. A 32-bit x86 Windows
+          program loads its DLLs from here, and FEX's xtajit.dll translates only
+          its own code. Without the farm, a 32-bit setup .exe cannot reach its
+          first instruction.
+
+          Success means the farm is published as the `payloads` release asset
+          i386-windows.tar.gz, which build.yml then downloads. It does NOT mean
+          a 32-bit program has been run: that needs a device, and the smoke test
+          is tests/x86/build.sh hello-x86 (docs/WOW64.md, "Building").
+          TXT
+
+      - name: Select an Xcode with the macOS SDK meson will cross-compile against
+        # DXMT's i386 build calls `xcrun --sdk macosx --show-sdk-path`, and the
+        # image's default Xcode does not have to be the one build/ci picks.
+        run: bash build/ci/select-xcode.sh
+
+      - name: Install the farm's build prerequisites
+        run: |
+          set -euo pipefail
+          # bison: Wine's configure rejects macOS's 2.3, and tools/widl and
+          #   tools/wrc are generated from .y files, so it is really used.
+          # meson + ninja: DXMT's i386 DLLs are built with meson against the
+          #   i386 Wine tree, in build/wine-i386/build.sh.
+          # pkg-config, gettext, glib: Wine's configure wants them; the image
+          #   usually has them but does not promise it.
+          brew install bison meson ninja pkg-config gettext glib
+          # build/wine-i386/build.sh puts llvm-mingw first on PATH but NOT
+          # Homebrew's bison, so a configure run there would find macOS's 2.3 and
+          # die with a message about a version, not about bison. Put it on the
+          # runner's PATH for the whole job instead of editing the script: the
+          # script's own header says it was translated from a WSL run, and the
+          # fewer things that differ from that run, the better.
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          /opt/homebrew/opt/bison/bin/bison --version | head -1
+
+      - name: Fetch llvm-mingw (the same pin build.yml uses)
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o /tmp/llvm-mingw.tar.xz
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  /tmp/llvm-mingw.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/llvm-mingw.tar.xz -C toolchains
+          test -x toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin/i686-w64-mingw32-clang \
+            || { echo "::error::llvm-mingw unpacked without the i686 cross compiler"; exit 1; }
+
+      - name: Build the farm
+        env:
+          # The tree is large and the runner has cores to spare; the script
+          # defaults to `sysctl -n hw.ncpu`, which is right, so this is only a
+          # floor in case that probe returns nothing.
+          JOBS: "6"
+        run: bash build/wine-i386/build.sh
+
+      - name: What was actually produced
+        if: always()
+        run: |
+          set -euo pipefail
+          d=app/Madeira/i386-windows
+          n=$(find "$d" -type f ! -name '.gitkeep' | wc -l | tr -d ' ')
+          echo "$n file(s) in $d"
+          ls "$d" 2>/dev/null | head -30 || true
+
+      - name: Pack the farm
+        if: success()
+        run: |
+          set -euo pipefail
+          d=app/Madeira/i386-windows
+          # A .gitkeep-only directory would publish a payload that installs
+          # nothing, which is indistinguishable at the app build from the farm
+          # being present. Refuse instead.
+          n=$(find "$d" -type f ! -name '.gitkeep' | wc -l | tr -d ' ')
+          [ "$n" -gt 0 ] || { echo "::error::the farm is empty - nothing to publish"; exit 1; }
+          # Files at the archive's top level (no leading i386-windows/), because
+          # fetch-payload.sh extracts straight into the destination directory.
+          tar -czf i386-windows.tar.gz -C "$d" .
+          ls -l i386-windows.tar.gz
+
+      - name: Publish the farm as a payload
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The repository this workflow runs in. Same reason as build.yml's
+          # publish job: `gh` otherwise follows the checkout's remote, which in
+          # the build-host mirror is a repository the token cannot write.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag=payloads
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Prebuilt payloads" \
+              --notes "Rolling release. Assets are replaced in place by the payloads workflow; they are built from pinned submodule revisions, so an asset's content changes only when those pins do. Consumed by build.yml through build/ci/fetch-payload.sh."
+          fi
+          gh release upload "$tag" i386-windows.tar.gz --clobber
+          echo "published: https://github.com/$GH_REPO/releases/download/$tag/i386-windows.tar.gz"
+
+      - name: Where to find it
+        if: success()
+        run: |
+          echo "payload: ${{ github.server_url }}/${{ github.repository }}/releases/download/payloads/i386-windows.tar.gz"
+          echo "consumed by: build.yml, via build/ci/fetch-payload.sh i386-windows.tar.gz app/Madeira/i386-windows"

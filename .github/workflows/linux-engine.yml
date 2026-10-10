@@ -1,0 +1,331 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# linux-engine.yml - build the engine that runs a Linux guest.
+#
+# WHY THIS IS A SEPARATE WORKFLOW, AND DISPATCH-ONLY
+# `build.yml` publishes a release on every push. This job builds QEMU, pkg-config
+# glue and the dependency tree around it for the iOS triple, which is a
+# multi-hour job that will need several iterations before it succeeds. Putting it
+# in `build.yml` would turn every push red while that happens, and the release
+# pipeline it shares is the only thing currently producing an IPA. So it lives
+# here, on `workflow_dispatch` only, and its failures are its own.
+#
+# WHAT IT BUILDS
+# Two sysroots, exactly as UTM builds them:
+#
+#   ios-tci-arm64  QEMU's TCG built with --enable-tcg-interpreter. This is the
+#                  JIT-less engine: a threaded interpreter, no executable
+#                  memory, no debugger. It is what UTM SE ships.
+#   ios-arm64      QEMU's TCG JIT. The fast engine, needs a debugger.
+#
+# Both are needed. `LinuxEnginePlan` picks between them at run time, and
+# `MADEIRA_HAS_QEMU` / `MADEIRA_HAS_QEMU_TCGI` in the app's build settings are
+# what tell the app which of them it was actually linked against.
+#
+# HOW IT WORKS, AND WHY IT IS SHAPED LIKE THIS
+# UTM has already solved this build, and re-solving it would be the wrong kind
+# of work. So this job uses UTM's own scripts and UTM's own pinned sources
+# rather than a hand-written configure line: `scripts/build_dependencies.sh`
+# knows the patches each dependency needs on iOS, and `patches/sources` pins
+# the exact upstream archives, including UTM's own QEMU packaging:
+#
+#   QEMU   https://github.com/utmapp/qemu/releases/download/v10.0.12-utm/qemu-10.0.12-utm.tar.xz
+#   pixman 0.38.0
+#   libslirp v4.9.1
+#
+# The UTM revision is pinned rather than tracking `main`, because `patches/`
+# changes with it and an unpinned build is not reproducible.
+#
+# LICENSING: QEMU is GPL-2.0 and UTM is GPL-3.0. Madeira is GPL-3.0-or-later,
+# so linking QEMU into it is compatible. Nothing here redistributes a binary
+# that the licence forbids; the app is already GPL-3.0-or-later.
+#
+# EXPECT THIS TO FAIL THE FIRST FEW TIMES. The dependency tree is sensitive to
+# Homebrew packages that shadow the iOS-only ones - UTM's own documentation
+# warns that `libusb`, `gawk` and `cmake` break the build when installed - and
+# macOS runners ship some of them. When it fails, read the first error rather
+# than the last, and pin or hide the offending package.
+#
+# FIVE RUNS IN, THIS IS WHAT HAS ACTUALLY FAILED, IN ORDER. Each line is a
+# dependency the previous run revealed, which is the only reason to keep a log
+# here at all:
+#
+#   1  pip3 install six pyparsing
+#         error: externally-managed-environment. Homebrew's python3 is PEP 668
+#         managed. Fixed by PIP_BREAK_SYSTEM_PACKAGES=1.
+#   2  'setuptools' not found in your Python 3 installation
+#         Homebrew's python3 no longer ships distutils. Fixed by installing
+#         setuptools.
+#   3  'pyyaml' not found
+#         Fixed by installing UTM's whole check_env list at once, so the checks
+#         stop costing a full job cycle each. Also fixed the artifact path:
+#         UTM names the directory sysroot-*, not Sysroot-*.
+#   4  meson.build:2092:18: ERROR: Dependency "SPIRV-Tools" not found
+#         spirv-llvm-translator is not spirv-tools. Fixed with brew spirv-tools
+#         and spirv-headers.
+#   5  src/kosmickrisp/bridge/mtl_argument_table.m:9:10: fatal error:
+#      'Metal/MTL4ArgumentTable.h' file not found
+#         This one is not a missing package, it is a missing SDK. KosmicKrisp is
+#         Mesa's Vulkan-on-Metal driver, upstream Mesa grew a dependency on
+#         Apple's Metal 4 headers, and Metal 4 ships with the Xcode 26 SDK. The
+#         runner is on Xcode 16.4 (iPhoneOS 18.5 / MacOSX 15), so the header is
+#         simply not there. UTM knows about this - its own script has a branch
+#         with the comment "KosmicKrisp requires Metal 4 which the simulator
+#         SDKs do not provide" - but that branch only covers simulators, and a
+#         device build takes the other one.
+#         The fix is not to find the header. It is to stop building the piece
+#         that wants it. See the `Drop the GPU drivers` step.
+#
+# Note the shape of #5: four runs of chasing packages, and the fifth is a
+# different kind of problem that no package can solve. When the next failure
+# looks unlike the previous four, that is the signal to stop adding packages.
+
+name: linux-engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      utm_ref:
+        description: "utmapp/UTM commit to build the engine from"
+        type: string
+        default: "7eadb056ae0f91d979059544d0ddcd2d5a40be92"
+      targets:
+        description: "Which sysroots to build"
+        type: choice
+        options:
+          - both
+          - interpreter-only
+          - jit-only
+        default: "both"
+
+permissions:
+  # write, not read: this job also publishes the JIT-less sysroot as a payload
+  # asset so the app build can link it (build/ci/fetch-payload.sh). The artifact
+  # upload above cannot be used for that - an app build in another repository
+  # cannot read it.
+  contents: write
+
+jobs:
+  build-engine:
+    name: QEMU for iOS (${{ inputs.targets }})
+    runs-on: macos-15
+    # UTM's own CI allows hours for this; a hosted runner is capped at six, and
+    # both sysroots in one job can exceed it. Split the input if that happens.
+    timeout-minutes: 350
+    steps:
+      - name: Say what this produces
+        run: |
+          cat <<'TXT'
+          Building QEMU for aarch64-apple-ios from UTM's pinned sources.
+
+            interpreter-only -> ios-tci-arm64, the JIT-less engine (UTM SE)
+            jit-only         -> ios-arm64, the JIT engine (UTM)
+            both             -> both
+
+          Success means the sysroots are uploaded as an artifact. It does NOT
+          mean Madeira can launch a guest: the app still has to link them and
+          set MADEIRA_HAS_QEMU / MADEIRA_HAS_QEMU_TCGI, which is a separate
+          change to the Xcode project.
+          TXT
+
+      - uses: actions/checkout@v4
+
+      - name: Install UTM's documented build prerequisites
+        run: |
+          set -euo pipefail
+          # Read out of UTM's own `check_env` function rather than guessed.
+          # It refuses to run unless each of these resolves, one message at a
+          # time, which is how the first two runs of this job died:
+          #   llvm, spirv-llvm-translator, libxcb, libxrandr  are hard checks
+          #   ninja  is meson's default backend, and UTM drives meson
+          #
+          # spirv-tools and spirv-headers were added after the fourth run, which
+          # got an hour into the dependency build and then stopped at
+          #   meson.build:2092:18: ERROR: Dependency "SPIRV-Tools" not found
+          # (tried pkg-config, framework and cmake)
+          # spirv-llvm-translator is a different package and is not enough on
+          # its own: that is the check UTM performs, this is what meson wants.
+          brew install bison pkg-config gettext glib libgpg-error nasm meson ninja \
+                       llvm spirv-llvm-translator spirv-tools spirv-headers \
+                       libxcb libxrandr
+          # Homebrew's python3 is PEP 668 managed, so a bare `pip3 install`
+          # aborts with `error: externally-managed-environment`. That is exactly
+          # how the first run of this job failed, at this line, before any QEMU
+          # work had begun. UTM's documentation predates the change.
+          #
+          # The override is used rather than a virtualenv on purpose: UTM's
+          # scripts invoke `python3` directly from many places, and a venv that
+          # is not active in each of those would fail later and less clearly.
+          # These are two pure-Python packages, which is what makes the
+          # override safe here and not safe in general.
+          #
+          # The full list `check_env` tests, taken from the script at the pinned
+          # revision. Installing them together is deliberate: the checks run in
+          # order and abort on the first failure, so adding one per run costs a
+          # full job cycle each.
+          #
+          #   six, pyparsing   UTM's documented pair
+          #   setuptools       provides the `distutils` module that is tested;
+          #                    Homebrew's python3 no longer ships it
+          #   pyyaml           tested as `yaml`
+          #   distlib, mako    tested directly
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install six pyparsing setuptools pyyaml distlib mako
+
+      - name: Fetch UTM at a pinned revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/utmapp/UTM.git utm
+          cd utm
+          git checkout --quiet "${{ inputs.utm_ref }}"
+          echo "pinned at $(git rev-parse HEAD)"
+          # Show the versions this revision will actually build, so a failure
+          # downstream can be attributed without guessing.
+          grep -E '^(QEMU_SRC|PIXMAN_SRC|SLIRP_SRC)=' patches/sources || true
+
+      - name: Drop the GPU drivers that need an SDK we do not have
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          # WHAT THIS REMOVES, AND WHY IT IS SAFE TO REMOVE
+          # UTM's script has three steps at the end that build graphics drivers:
+          #
+          #   build_spice_client     a display client                  KEPT
+          #   build_vulkan_drivers   Mesa/KosmicKrisp + MoltenVK      REMOVED
+          #   build_d3d_drivers      DXMT + a second LLVM             REMOVED
+          #
+          # `fixup_all` and `remove_shared_gst_plugins` still run after them, in
+          # that order, untouched.
+          # They run AFTER `build $QEMU_DIR`, which is the line that produces the
+          # QEMU libraries this job exists to produce. Nothing built before them
+          # can depend on them, so removing them cannot change what QEMU
+          # compiles to. `build_mesa_host` is only ever called from
+          # build_vulkan_drivers, and that call is the exact compile that failed
+          # run 5 - so removing the call removes the failure and not a dependency
+          # of the thing we want.
+          #
+          # WHAT IS LOST: GPU acceleration inside a guest. KosmicKrisp is
+          # Vulkan-on-Metal and DXMT is Direct3D-on-Metal; neither is reachable
+          # from a Linux guest running under TCG's interpreter, which draws
+          # through QEMU's own framebuffer. MoltenVK's ICD registration goes with
+          # them. This is the same trade UTM SE makes: no GPU, and it runs on a
+          # stock iPad. Vulkan support that *is* needed to build QEMU -
+          # virglrenderer, the Vulkan loader, epoxy, ANGLE - is built earlier by
+          # build_qemu_dependencies and is untouched here.
+          #
+          # The second reason is cost. Mesa's host build, DXMT and the LLVM 15 it
+          # needs took the better part of fifteen minutes of run 5, and this job
+          # has to be re-run several times yet.
+          #
+          # WHY A PATCH RATHER THAN A DIFFERENT UTM REVISION: patches/ travels
+          # with the revision, and the revision is pinned so the build is
+          # reproducible. Editing a script inside the runner keeps that promise
+          # and keeps the reason next to the edit.
+          python3 - <<'PY'
+          import pathlib
+
+          script = pathlib.Path("scripts/build_dependencies.sh")
+          text = script.read_text()
+
+          # The call sites, matched exactly, with the assertions below. A silent
+          # no-op here would cost another 45 minutes, so it fails loudly instead.
+          removed = [
+              "build_vulkan_drivers\n",
+              "build_d3d_drivers\n",
+          ]
+          for line in removed:
+              if line not in text:
+                  raise SystemExit(
+                      f"linux-engine: {line.strip()!r} is not in "
+                      "scripts/build_dependencies.sh at this revision. The patch "
+                      "would do nothing, which is worse than failing: UTM changed "
+                      "and the step above must be re-read against the new script."
+                  )
+              text = text.replace(line, "# Removed for Madeira: " + line)
+
+          script.write_text(text)
+
+          # Read back what the next step will actually execute, so the log shows
+          # the patched file and not the intention to patch it.
+          for line in pathlib.Path("scripts/build_dependencies.sh").read_text().splitlines():
+              if "Removed for Madeira" in line:
+                  print("patched:", line)
+          PY
+
+      - name: Build the JIT-less sysroot (ios-tci-arm64)
+        if: ${{ inputs.targets != 'jit-only' }}
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          # bison must win over the one macOS ships; UTM's docs are explicit.
+          export PATH="/opt/homebrew/opt/bison/bin:$PATH"
+          ./scripts/build_dependencies.sh -p ios-tci -a arm64
+
+      - name: Build the JIT sysroot (ios-arm64)
+        if: ${{ inputs.targets != 'interpreter-only' }}
+        working-directory: utm
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/bison/bin:$PATH"
+          ./scripts/build_dependencies.sh -p ios -a arm64
+
+      - name: What was produced
+        if: always()
+        run: |
+          ls -la utm || true
+          find utm -maxdepth 2 -type d -name 'Sysroot*' -print 2>/dev/null || true
+
+      - name: Upload the sysroots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-ios-sysroots
+          # UTM names these from its own variables: SYSROOT_DIR is
+          # "sysroot-$PLATFORM_FAMILY_NAME-$ARCH", so the interpreter build
+          # lands in sysroot-iOS-TCI-arm64 and the JIT one in sysroot-iOS-arm64.
+          # The first version of this job looked for `Sysroot-*` and uploaded
+          # nothing even though the directory had been created.
+          path: utm/sysroot-*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the JIT-less sysroot as a payload
+        # `success()`, unlike the artifact upload above. The artifact is worth
+        # keeping from a failed run so the failure can be inspected; a PAYLOAD is
+        # not, because build.yml would download it and ship it. A half-built
+        # sysroot links and then crashes inside the guest.
+        if: ${{ success() && inputs.targets != 'jit-only' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag=payloads
+          d=utm/sysroot-iOS-TCI-arm64
+          test -d "$d" || { echo "::error::$d was not produced"; exit 1; }
+          # The engine the launcher dlopens, in the form that can actually load:
+          # UTM's framework packaging names the engine and its dependencies
+          # `@rpath/...`, where the copies under lib/ name the absolute path of
+          # this runner. Asserted by name because a sysroot with frameworks but
+          # no aarch64 engine would still tar and still publish, and the app
+          # would then show no engine at all.
+          test -f "$d/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu" \
+            || { echo "::error::$d/Frameworks/qemu-aarch64-softmmu.framework is missing"; exit 1; }
+          # Trim before packaging, so what is published is what a guest loads
+          # instead of the build tree it was assembled in. The script asserts the
+          # engine and its dependencies survive, and the app build runs it again
+          # on what it downloads.
+          bash build/ci/trim-qemu-sysroot.sh "$d"
+          # Files at the archive's top level: fetch-payload.sh extracts straight
+          # into the destination directory. `-h` would replace the
+          # Frameworks/*.framework/Versions symlinks with copies and multiply the
+          # payload; the links are preserved dwarvishly, as upstream packed them.
+          tar -czf qemu-ios-tci-arm64.tar.gz -C "$d" .
+          ls -l qemu-ios-tci-arm64.tar.gz
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Prebuilt payloads" \
+              --notes "Rolling release. Assets are replaced in place; they are built from pinned submodule revisions, so an asset's content changes only when those pins do."
+          fi
+          gh release upload "$tag" qemu-ios-tci-arm64.tar.gz --clobber
+          echo "payload: ${{ github.server_url }}/${{ github.repository }}/releases/download/$tag/qemu-ios-tci-arm64.tar.gz"

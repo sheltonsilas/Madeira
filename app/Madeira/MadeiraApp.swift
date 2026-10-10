@@ -10,7 +10,7 @@ struct MadeiraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MadeiraHomeShell()
                 .modifier(ClaimGamepadEvents())
                 .onAppear {
                     GamepadInput.shared.start()
@@ -19,7 +19,14 @@ struct MadeiraApp: App {
                 }
                 // madeira://jit-network/... (the Madeira JIT shortcut returning, JITNetwork.swift),
                 // else madeira://play?exe=... (Home Screen shortcuts, SavesAndShortcuts.swift).
-                .onOpenURL { url in if !JITNetworkShortcut.shared.handle(url) { ShortcutRouter.shared.handle(url) } }
+                .onOpenURL { url in
+                    if JITNetworkShortcut.shared.handle(url) { return }
+                    if url.isFileURL {
+                        IncomingInstaller.shared.handle(url)
+                        return
+                    }
+                    ShortcutRouter.shared.handle(url)
+                }
         }
     }
 }

@@ -1,0 +1,836 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# Builds the app on a macOS runner and uploads one unsigned IPA, which
+# presents both variants behind a switch in the app.
+#
+# HONEST STATUS - READ BEFORE TRUSTING A GREEN TICK
+# This workflow is structurally complete but is NOT expected to produce a
+# runnable IPA on its first execution, for reasons that are properties of the
+# upstream project and not of this file:
+#
+#  1. Three build inputs are deliberately not in the repository (upstream
+#     docs/BUILDING.md, "Inputs that are not in the repository"):
+#       * toolchains/llvm-mingw-...      downloadable, pinned hash below.
+#       * toolchains/llvm-ios-build/     LLVM 15's static libraries built FOR
+#                                        iOS, which is what makes the D3D path
+#                                        linkable at all: airconv, inside
+#                                        libdxmt_combined.a, calls into them.
+#                                        build/ci/build-llvm-ios.sh builds it
+#                                        and it is gated behind the
+#                                        `heavy_toolchain` input because it
+#                                        takes about an hour. Its output is
+#                                        cached, so it is paid for once; the
+#                                        cache is keyed llvm-ios-* and this
+#                                        job restores it.
+#       * app/Madeira/x86_64-vcruntime/  Microsoft's VC++ runtime DLLs. These
+#                                        cannot be redistributed. Supply them as
+#                                        the base64 secret VCREDIST_B64.
+#       * Apple's Metal Shader Converter, licence-bound. Only needed to REBUILD
+#         the converter; the library itself is already tracked, so a normal
+#         build does not need it.
+#  2. Upstream ships Debug as the only configuration that runs games ("Release
+#     builds have crashed the guest"), so this workflow builds Debug only. That
+#     is deliberate, not an oversight.
+#  3. An unsigned IPA still needs signing before it can be installed. See
+#     GUIDE.md; Sideloadly and SideStore do that from the IPA.
+#
+# What this workflow DOES guarantee, even when the heavy toolchain is absent:
+#   - the submodules really resolve, on a clean checkout;
+#   - the Xcode project is structurally valid and lists the new Variant sources;
+#   - the JIT invariants hold (below), which is the part that actually makes
+#     the app work on device.
+
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      heavy_toolchain:
+        description: "Build LLVM-for-iOS from source (hours, needs a big runner)"
+        type: boolean
+        default: false
+      publish_release:
+        description: "Publish the validated IPA as a GitHub release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-jit-invariants:
+    # Cheap, fast, and the single most useful gate: it fails loudly if a future
+    # edit drops an entitlement or changes the build configuration, which is the
+    # usual reason "the app installed but nothing runs".
+    name: Verify JIT and packaging invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Entitlements required for JIT are present
+        run: |
+          set -euo pipefail
+          f=app/Madeira/Madeira.entitlements
+          for key in get-task-allow com.apple.security.cs.allow-jit; do
+            if ! grep -q "$key" "$f"; then
+              echo "::error file=$f::missing entitlement $key - JIT will not work"
+              exit 1
+            fi
+          done
+          echo "get-task-allow and allow-jit present"
+
+      - name: The JIT helper extension and framework are still shipped
+        run: |
+          set -euo pipefail
+          test -d app/MadeiraJITHelper || { echo "::error::JIT helper sources missing"; exit 1; }
+          test -d app/Frameworks/StikJIT.xcframework || { echo "::error::StikJIT framework missing"; exit 1; }
+          echo "helper + StikJIT present"
+
+      - name: The JIT script and URL scheme are intact
+        run: |
+          set -euo pipefail
+          test -f app/Madeira/madeira-jit.js || { echo "::error::madeira-jit.js missing"; exit 1; }
+          grep -q '<string>madeira</string>' app/Madeira/Info.plist \
+            || { echo "::error::madeira:// URL scheme not registered"; exit 1; }
+          echo "JIT script + URL scheme present"
+
+      - name: The variant and shell sources are in the Xcode target
+        run: |
+          set -euo pipefail
+          for f in AppVariant JitManager MadeiraBrowserView WindowsInstallerBridge PointerMode LinuxEnvironmentStore JitOnboardingView; do
+            grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
+              || { echo "::error::$f.swift is not in the Sources phase"; exit 1; }
+          done
+          for f in MadeiraComponents MadeiraShellView MadeiraMachinesView MadeiraStoreView; do
+            grep -q "$f.swift in Sources" app/Madeira.xcodeproj/project.pbxproj \
+              || { echo "::error::$f.swift is not in the Sources phase; run tools/add_variant_files.py"; exit 1; }
+          done
+          echo "all Variant and Shell sources are compiled by the Madeira target"
+
+      - name: The Swift sources are not lopsided
+        # The files are edited on a machine with no Swift compiler, so the first
+        # compile of a change is a macOS runner away. A brace closed one time too
+        # many or too few is the most common way to spend that run on nothing:
+        # the compiler reports it as a cascade at the end of the file. This is
+        # not a parser and does not claim to be - see the script's own header -
+        # but it catches that, in a second, before the runner is spent.
+        run: python3 tools/check_swift_balance.py
+
+      - name: The published source describes exactly one app
+        # `tools/make_source.py --linux-ipa` still exists, and passing it puts a
+        # second app back into the SideStore source under the old bundle id
+        # com.willfaust.madeora.linux. That app cannot be updated by the unified
+        # binary - different bundle id - so every install of it is orphaned the
+        # day the unified app ships. The publish job no longer passes the flag;
+        # this keeps it that way, because one word in a shell line would bring
+        # the orphan back and nothing else would notice.
+        run: |
+          set -euo pipefail
+          # Only the publish job is searched, for two reasons that both bit
+          # earlier versions of this check. The flag is named in a comment on
+          # the publish step and in this step's own source, so a plain grep over
+          # the file matches prose and then matches itself; and this step lives
+          # in a job ABOVE publish, so starting the search at "publish:" leaves
+          # the guard out of its own input by construction. Comment lines are
+          # dropped, which is what removes the publish step's explanation of why
+          # it does not pass the flag.
+          needle="--linux""-ipa"
+          if sed -n '/^  publish:/,$p' .github/workflows/build.yml \
+             | grep -v '^[[:space:]]*#' \
+             | grep -q -- "$needle"; then
+            echo "::error::the publish step passes $needle, which puts a second app"
+            echo "::error::into the SideStore source under a bundle id the unified binary"
+            echo "::error::cannot update. Remove the flag."
+            exit 1
+          fi
+          echo "the publish step ships one app"
+          head -c 4096 /dev/urandom > /tmp/dummy.ipa
+          python3 tools/make_source.py \
+            --out /tmp/source.json \
+            --windows-ipa /tmp/dummy.ipa \
+            --base-url https://example.invalid \
+            --version 0.0
+          python3 - <<'PY'
+          import json, sys
+          source = json.load(open('/tmp/source.json'))
+          apps = source.get('apps', [])
+          if len(apps) != 1:
+              print(f"::error::the source describes {len(apps)} apps, expected 1")
+              sys.exit(1)
+          bundle = apps[0].get('bundleIdentifier')
+          if bundle != 'com.willfaust.madeora':
+              print(f"::error::the app's bundle id is {bundle}, not com.willfaust.madeora")
+              sys.exit(1)
+          print(f"source describes one app: {apps[0]['name']} {apps[0]['version']} ({bundle})")
+          PY
+
+      - name: The variant flag reaches the Swift compiler
+        # Without the target-side setting, MADEIRA_VARIANT_FLAG is just a build
+        # setting nobody reads and the "Linux" job quietly ships a second
+        # Windows build. That defect existed once; this keeps it gone.
+        #
+        # Matched by prefix, not by the whole line, because the line now carries a
+        # second forwarding ($(MADEIRA_ENGINE_FLAGS)) and pinning the full string
+        # here made this check fail on a correct project - twice, once for each
+        # edit. The prefix is what this step is about: the variant flag has to be
+        # the FIRST thing after $(inherited), and the rest of the line is checked
+        # by tools/add_engine_embed.py, which owns it.
+        run: |
+          set -euo pipefail
+          grep -q 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(MADEIRA_VARIANT_FLAG)' \
+            app/Madeira.xcodeproj/project.pbxproj \
+            || { echo "::error::MADEIRA_VARIANT_FLAG is not forwarded to Swift"; exit 1; }
+          grep -q 'MADEIRA_VARIANT_FLAG=' .github/workflows/build.yml \
+            || { echo "::error::the build job does not pass MADEIRA_VARIANT_FLAG"; exit 1; }
+          echo "variant flag is wired end to end"
+
+      - name: Project file is structurally valid
+        run: python3 tools/check_pbxproj.py
+
+      - name: No comment sits inside a continued shell command
+        # Twenty seconds here against a full native-chain rebuild: in bash a
+        # backslash-newline is removed before comment processing, so a `#` inside
+        # an argument list swallows the rest of the command and the options after
+        # it are never passed. That is how the ENABLE_FEX_ALLOCATOR change first
+        # shipped, dropping -DTUNE_CPU=none with it. `bash -n` accepts it, so this
+        # is the only check that can catch it before macOS does.
+        run: python3 tools/check_shell_continuations.py
+
+      - name: The archive layout the packager writes is still valid
+        # LinuxEnvironmentPackager emits these bytes but cannot be run here:
+        # there is no iOS toolchain on a runner. So the same header layout is
+        # written by this script and read back by Python's own tarfile, which
+        # catches a wrong field offset, a truncated octal size or a checksum
+        # summed over the wrong bytes before an iPad ever sees the archive.
+        run: python3 tools/validate_tar_layout.py
+
+      - name: The shipped Swift interfaces are readable by this Xcode
+        # app/Frameworks/StikJIT.xcframework ships no binary .swiftmodule, only
+        # .swiftinterface files, so those files are the only description of the
+        # module the app imports -- a build input like any source file. The copy
+        # in the repository was printed by Swift 6.4, whose qualified names put
+        # the module and two colons in front of the type, and the newest Xcode on
+        # GitHub's runners (26.3) cannot parse that at all:
+        #   arm64-apple-ios.private.swiftinterface:12:31: error: expected '{'
+        # That failure lands 30 minutes into the run, on the app target, where it
+        # reads like a Swift error rather than a bad input file. Checked here in
+        # 20 seconds instead; the fix is build/ci/dequalify-swiftinterface.py.
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys
+          bad = []
+          for path in sorted(glob.glob('app/**/*.swiftinterface', recursive=True)):
+              with open(path, errors='replace') as fh:
+                  for n, line in enumerate(fh, 1):
+                      code = line.split('//', 1)[0]
+                      if re.search(r'[A-Za-z_][A-Za-z_0-9]*::', code):
+                          bad.append('%s:%d: %s' % (path, n, line.strip()))
+          if bad:
+              print('::error::a swiftinterface uses qualified names this Xcode cannot parse')
+              print('::error::run build/ci/dequalify-swiftinterface.py on it')
+              print('\n'.join(bad))
+              sys.exit(1)
+          print('no qualified names in the shipped swiftinterfaces')
+          PY
+
+      - name: The engine is embedded, and its flags have a way to reach Swift
+        # Two edits that have to exist together and are invisible until a payload
+        # build has already been paid for:
+        #
+        #   * app/Madeira/qemu-ios as a folder REFERENCE in Resources. As a group
+        #     it would enumerate its children now, when it holds only .gitkeep,
+        #     and the dylib the launcher dlopens would not be in the bundle - at
+        #     run time, on a device, as a dlopen failure.
+        #   * $(MADEIRA_ENGINE_FLAGS) in SWIFT_ACTIVE_COMPILATION_CONDITIONS. The
+        #     flags are set by build.yml as BUILD SETTINGS; a Swift `#if` reads
+        #     compilation conditions. Without the forwarding the app reports the
+        #     engine absent with the engine sitting in its own bundle.
+        #
+        # tools/add_engine_embed.py is idempotent and has the same check, so a
+        # stale project fails here with the fix in the message rather than
+        # twenty-five minutes into an app build.
+        run: python3 tools/add_engine_embed.py --check
+
+      - name: The payload trimmer is valid shell, and the IPA gate behaves
+        # Two things that decide what the published IPA contains, checked before
+        # a build spends twenty-five minutes producing one.
+        #
+        # build/ci/trim-qemu-sysroot.sh deletes most of the QEMU payload, and a
+        # script that deletes the engine's own dependencies builds a green app
+        # that cannot start a machine. Its assertion list is real code and gets
+        # a syntax check here; the build itself runs it against the payload,
+        # where the assertions are what matter.
+        #
+        # tools/inspect-ipa.py is the gate that a package has to pass to be
+        # published, so a hole in it is an uninstallable app shipped green. Its
+        # self test writes small archives of each shape that must be rejected -
+        # no arm64 slice, a symlink out of the bundle, two apps, one too large
+        # to re-sign - and checks the verdict on each. No network needed.
+        run: |
+          set -euo pipefail
+          bash -n build/ci/trim-qemu-sysroot.sh
+          echo "trim script: syntax ok"
+          python3 tools/self_test_inspect_ipa.py
+
+      - name: The payload fetcher is valid shell, and fails loudly when it must
+        # fetch-payload.sh decides whether an app build ships a 32-bit Windows
+        # farm and a QEMU engine, and its exit-status contract is the whole
+        # design: 0 fetched, 10 not published yet, 1 genuinely broken. Both 10
+        # and 1 stop the app build (see the payload step for why a missing farm
+        # is no longer survivable), but they stop it with different messages: 10
+        # names the payloads workflow to run, 1 says the asset is there and
+        # unusable. A typo that collapsed the two would send someone looking for
+        # the wrong problem. Checked by running it against a repository that has
+        # no such release, which is the only branch that needs no network and no
+        # credentials.
+        run: |
+          set -euo pipefail
+          bash -n build/ci/fetch-payload.sh
+          echo "syntax ok"
+
+          set +e
+          PAYLOAD_REPO=Madeira-does-not/exist PAYLOAD_TAG=payloads \
+            bash build/ci/fetch-payload.sh i386-windows.tar.gz "$(mktemp -d)/dest" >/tmp/fetch.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/fetch.log
+          if [ "$status" != 10 ]; then
+            echo "::error::a missing payload returned $status; it must return 10 (not published), not a failure"
+            exit 1
+          fi
+          grep -q "::warning::i386-windows.tar.gz is not published" /tmp/fetch.log \
+            || { echo "::error::the not-published message did not name the asset"; exit 1; }
+          echo "a missing payload is reported as 10 and names the asset, as designed"
+
+  build:
+    name: ${{ matrix.variant }}
+    needs: verify-jit-invariants
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: unified
+            # Debug only, on purpose. See the header comment.
+            #
+            # ONE entry, not two. The variant stopped being a compile-time
+            # choice: MADEIRA_VARIANT_LINUX is read in exactly one place, and
+            # every file in app/Madeira/Variant/ is compiled into this target
+            # either way. Building twice therefore produced two IPAs that could
+            # each present only one of the two front screens. The choice now
+            # comes from AppVariant.selectionKey at run time, so one binary
+            # shows both and the user switches between them.
+            #
+            # The empty flag is deliberate: it leaves the default at Windows
+            # and the switch reaches the Linux manager from there. The bundle
+            # identifier is unchanged from the old Windows variant, so an
+            # existing install upgrades in place rather than appearing twice.
+            variant_flag: ""
+            bundle_id: com.willfaust.madeora
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Select an Xcode with the iOS 26 SDK
+        # See build/ci/select-xcode.sh: the image's default Xcode is too old for
+        # MetalFX frame interpolation in DXMT and does not have to have the
+        # Metal toolchain the shader headers are generated with.
+        run: bash build/ci/select-xcode.sh
+
+      - name: Confirm the submodules resolved
+        run: |
+          set -euo pipefail
+          for d in FEX wine dxmt madeira-dock; do
+            n=$(ls -A "$d" | wc -l | tr -d ' ')
+            [ "$n" -gt 0 ] || { echo "::error::$d is empty - the fork's submodule commit is not reachable"; exit 1; }
+            echo "$d OK"
+          done
+
+      - name: Cache the toolchain inputs
+        uses: actions/cache@v4
+        with:
+          # The path list is part of a cache's identity: actions/cache hashes the
+          # paths into the cache version and will not match a cache whose paths
+          # differ, however well the key prefix fits. This step listed
+          # `toolchains`, the llvm-ios workflow lists the three directories
+          # below, so the llvm-ios-* cache -- the hour-long LLVM-for-iOS build
+          # that dxmt-ios/combine.sh needs -- never restored. The log from run
+          # 37250901109 says exactly that:
+          #   "Cache not found for input keys: toolchain-linux-<hash>,
+          #    toolchain-linux-, llvm-ios-"
+          # and the run then fell through to the headers-only fallback and died
+          # in combine.sh with "missing toolchains/llvm-ios-build/lib". The three
+          # paths are therefore byte-identical to heavy.yml's, on purpose; do
+          # not add llvm-mingw here (it is a 200 MB download, but a cheap one:
+          # the step below fetches it in about 15 seconds).
+          path: |
+            toolchains/llvm-ios-build
+            toolchains/llvm-host-bin
+            toolchains/llvm-project
+          key: toolchain-${{ matrix.variant }}-${{ hashFiles('docs/BUILDING.md') }}
+          # `unified` is a new cache namespace. Without naming the old variants
+          # explicitly, the first unified build would miss every cache this
+          # repository already has and redo the toolchain work from scratch.
+          restore-keys: |
+            toolchain-${{ matrix.variant }}-
+            toolchain-windows-
+            toolchain-linux-
+            llvm-ios-
+
+      - name: Fetch llvm-mingw (pinned upstream hash)
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          # --retry-connrefused because --retry does not cover a connection that
+          # was never established, which is how a runner loses this step for
+          # reasons that have nothing to do with the code.
+          curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o /tmp/llvm-mingw.tar.xz
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  /tmp/llvm-mingw.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/llvm-mingw.tar.xz -C toolchains
+
+      - name: Fetch the VC++ runtime (not redistributable; comes from a secret)
+        env:
+          VCREDIST_B64: ${{ secrets.VCREDIST_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VCREDIST_B64:-}" ]; then
+            echo "::warning::VCREDIST_B64 not set. Microsoft VC++ runtime DLLs are not"
+            echo "::warning::redistributable, so they are not in the repo. The build will"
+            echo "::warning::continue without them; some 64-bit programs need them."
+            mkdir -p app/Madeira/x86_64-vcruntime
+            exit 0
+          fi
+          mkdir -p app/Madeira/x86_64-vcruntime
+          echo "$VCREDIST_B64" | base64 --decode | tar -xz -C app/Madeira/x86_64-vcruntime
+
+      - name: Fetch the prebuilt payloads (32-bit farm, QEMU sysroot)
+        # Both are built by dedicated workflows and published as assets of the
+        # build host's rolling `payloads` release. See build/ci/fetch-payload.sh
+        # for why they are not built here, and why exit status 10 ("not
+        # published yet") is not an error: an app build before the first payload
+        # run must still produce an IPA, just one without that feature.
+        id: payloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # The 32-bit Windows farm. Without it a 32-bit setup .exe cannot load
+          # its syswow64 DLLs and dies before its first instruction - which is
+          # the whole of docs/WOW64.md's reason to exist. This is the half that
+          # is not tracked in git; the aarch64 half (wow64.dll, wow64win.dll,
+          # xtajit.dll) already is.
+          #
+          # A MISSING FARM IS AN ERROR AND NOT A WARNING. It used to be exit 10
+          # ("not published yet, continue"), and that shipped an IPA whose whole
+          # point -- running 32-bit installers like Chrome's or Claude's setup --
+          # was silently absent: the app installed, opened, and then hung the
+          # moment a 32-bit program was started. A green build with a dead
+          # feature is worse than a red build, so the build stops here and names
+          # the workflow that produces the missing piece.
+          bash build/ci/fetch-payload.sh i386-windows.tar.gz app/Madeira/i386-windows
+          farm=$?
+          case "$farm" in
+            0) echo "i386_farm=yes" >> "$GITHUB_ENV" ;;
+            10) echo "::error::i386-windows.tar.gz is not published in the payloads release."
+                echo "::error::32-bit Windows programs cannot start without it. Run the"
+                echo "::error::payloads workflow (Actions -> payloads -> what=i386-farm)"
+                echo "::error::first, then re-run this build."
+                exit 1 ;;
+            *) echo "::error::the 32-bit farm payload could not be fetched"; exit 1 ;;
+          esac
+
+          # The QEMU sysroot. Entities the launcher dlopens at run time out of
+          # the bundle, so nothing is statically linked and the app does not grow
+          # a 400 MB archive.
+          #
+          # Required for the same reason the farm is: a machine that reports the
+          # engine missing is a Linux capability that does not exist, and a
+          # warning here is how that shipped unnoticed. The build stops instead.
+          bash build/ci/fetch-payload.sh qemu-ios-tci-arm64.tar.gz app/Madeira/qemu-ios
+          qemu=$?
+          case "$qemu" in
+            0) echo "qemu=yes" >> "$GITHUB_ENV"
+               # The engine flags become Swift compilation conditions through
+               # MADEIRA_ENGINE_FLAGS in the target's
+               # SWIFT_ACTIVE_COMPILATION_CONDITIONS. Only tell the app an engine
+               # is present when the payload that backs it is, or the app would
+               # claim a machine can start and then fail at dlopen.
+               echo "engine_flags=MADEIRA_HAS_QEMU MADEIRA_HAS_QEMU_TCGI MADEIRA_HAS_QEMU_LAUNCHER" >> "$GITHUB_ENV" ;;
+            10) echo "::error::qemu-ios-tci-arm64.tar.gz is not published in the payloads release."
+               echo "::error::Linux machines cannot start without it. Run the linux-engine"
+               echo "::error::workflow (Actions -> linux-engine -> targets=interpreter-only),"
+               echo "::error::which builds QEMU and publishes this asset, then re-run this build."
+               exit 1 ;;
+            *) echo "::error::the QEMU sysroot payload could not be fetched"; exit 1 ;;
+          esac
+
+      - name: Trim the QEMU sysroot to what a Linux guest loads
+        # The payload is a whole build tree: 3 GB in 12,442 files, of which the
+        # launcher opens one framework. Shipped whole, the IPA unpacked to
+        # 3.5 GiB and could not be signed by a sideloader at all - build-8's
+        # failure - and 2.6 GB of what it carried could never have been loaded
+        # by anything: five other simulation targets with two copies each, a
+        # macOS pkg-config, 97 command line tools, 1,093 headers and 10,700 files
+        # of documentation. See build/ci/trim-qemu-sysroot.sh for the list and
+        # for why the framework copy is the loadable one.
+        #
+        # Run here as well as at publish time so a payload published before the
+        # trim existed still ships correctly, and so a mistake in the payload is
+        # caught by this build rather than by a device.
+        #
+        # Unconditional, deliberately. Gating it on the fetch's outcome would
+        # make the one failure that matters - the trim not running - look exactly
+        # like a build that did not need it, which is how a 3.5 GiB app shipped
+        # green. If the payload is not there the script says so and the job stops.
+        run: bash build/ci/trim-qemu-sysroot.sh app/Madeira/qemu-ios
+
+      - name: Build LLVM 15 for iOS (gated, about an hour, cached)
+        # Restored from the llvm-ios-* cache when a previous run built it, in
+        # which case build-llvm-ios.sh returns immediately.
+        if: ${{ inputs.heavy_toolchain || false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash build/ci/build-llvm-ios.sh
+
+      - name: Provide LLVM headers for dxmt-ios (only without the real build)
+        # Decided inside the script, not with a step-level if: the real
+        # LLVM-for-iOS build can be here two ways -- built by the gated step
+        # above, or restored from the llvm-ios-* cache -- and only one of them is
+        # visible in an expression. The step begins with `rm -rf
+        # toolchains/llvm-ios-build`, which would delete the archives the app's
+        # link needs.
+        #
+        # Upstream wants an LLVM cross-built for the iOS triple at
+        # toolchains/llvm-ios-build, which takes hours and is why a hosted runner
+        # cannot produce it. But reading build/dxmt-ios/build.sh shows LLVM_BUILD
+        # is never linked from; it is used only as an include path and to hash
+        # llvm-config.h into the shader cache key:
+        #     LLVM_INCLUDES="-I$LLVM_BUILD/include -I$LLVM_SRC/include"
+        #
+        # So only HEADERS are needed, and they are version-sensitive: DXMT
+        # compiles against LLVM APIs, so upstream's 15.0.7 is the right version.
+        # (Xcode's own toolchain is NOT a source - it ships no public LLVM
+        # headers at .../XcodeDefault.xctoolchain/usr/include/llvm. That was
+        # tried and failed; the error is recorded here so it is not retried.)
+        #
+        # The official 15.0.7 release tarball has the same headers. The asset URL
+        # is discovered through the GitHub API rather than hard-coded: for 15.0.7
+        # the macOS assets are named
+        #     clang+llvm-15.0.7-arm64-apple-darwin22.0.tar.xz
+        # so 'darwin' must be MATCHED, not excluded - an earlier version of this
+        # step excluded it and found nothing.
+        # GITHUB_TOKEN is not automatically in a step's environment; it has to be
+        # passed in explicitly, or `set -u` aborts the step before curl runs.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The real LLVM-for-iOS build, from the gated step or the llvm-ios-*
+          # cache, owns this directory: it has its own generated headers, and the
+          # substitution below starts by deleting it.
+          if [ -f toolchains/llvm-ios-build/lib/libLLVMCore.a ]; then
+            echo "the real LLVM-for-iOS build is here ($(ls toolchains/llvm-ios-build/lib/*.a 2>/dev/null | wc -l | tr -d ' ') archives); keeping it"
+            exit 0
+          fi
+          VERSION=15.0.7
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$VERSION" \
+            | python3 -c "
+          import json,platform,sys
+          m=platform.machine()
+          arch='arm64' if m in ('arm64','aarch64') else 'x86_64'
+          for a in json.load(sys.stdin).get('assets',[]):
+              n=a['name']
+              if n.endswith('.tar.xz') and arch in n and 'darwin' in n:
+                  print(a['browser_download_url']); break
+          " || true)
+          if [ -z "$url" ]; then
+            echo "::error::no LLVM $VERSION darwin tarball found for $(uname -m)"
+            exit 1
+          fi
+          # The 614 MB tarball is cached under toolchains/, which the
+          # existing "Cache the toolchain inputs" step already covers, so a fix
+          # cycle re-uses it instead of re-downloading.
+          tarball="toolchains/llvm-$VERSION.tar.xz"
+          if [ -f "$tarball" ]; then
+            echo "using cached $tarball ($(du -h "$tarball" | cut -f1))"
+          else
+            echo "fetching $url"
+            curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --connect-timeout 30 "$url" -o "$tarball"
+          fi
+          # Resolve the archive's top-level directory instead of extracting a
+          # "*/include" glob. bsdtar exits 0 even when a member pattern matches
+          # nothing, so the glob silently extracted an empty directory and the
+          # || fallback never ran - which is how this step failed once already.
+          root=$(tar -tJf "$tarball" 2>/dev/null | sed -n '1s|/.*||p')
+          test -n "$root" || { echo "::error::could not read the tarball index"; exit 1; }
+          echo "archive root: $root"
+          rm -rf /tmp/llvmx toolchains/llvm-ios-build
+          mkdir -p /tmp/llvmx toolchains/llvm-ios-build toolchains/llvm-project
+          tar -xJf "$tarball" -C /tmp/llvmx "$root/include"
+          mv "/tmp/llvmx/$root/include" toolchains/llvm-ios-build/include
+          test -f toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || {
+            echo "::error::llvm-config.h not found after extraction"
+            ls toolchains/llvm-ios-build/include 2>/dev/null || true
+            exit 1
+          }
+          # LLVM_SRC/include is the second -I path; point it at the same tree.
+          mkdir -p toolchains/llvm-project/llvm
+          ln -sfn "$(cd toolchains/llvm-ios-build/include && pwd)" toolchains/llvm-project/llvm/include
+          echo "LLVM headers ready: $(grep -m1 LLVM_VERSION_STRING toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h || echo ok)"
+
+      - name: Cache the native build trees
+        # FEX and Wine dominate the wall clock and both are ordinary
+        # incremental make trees, so a cache turns a long iteration into a
+        # short one. The key follows the submodule pins: bumping FEX or Wine
+        # starts a fresh tree rather than resurrecting stale objects.
+        #
+        # The three build scripts are in the hash as well, and that is not
+        # belt-and-braces -- it is the fix for a real trap. `hashFiles` cannot
+        # read a submodule pin, so `FEX/CMakeLists.txt` was standing in for one;
+        # but the *configure options* live in build/fex-ios/build.sh, which was
+        # not hashed at all. CMake reads option cache entries only at configure
+        # time, and build/fex-ios/build.sh skips reconfiguring when a
+        # CMakeCache.txt is already present, so editing a -D flag there changed
+        # nothing at all on a cache hit: the restored cache silently pinned the
+        # old value and the log showed no sign of it. Turning on
+        # ENABLE_FEX_ALLOCATOR is exactly such a change.
+        uses: actions/cache@v4
+        with:
+          path: |
+            FEX/build-ios
+            wine/build-macos
+            wine/build-arm64ec
+          key: native-${{ matrix.variant }}-${{ hashFiles('FEX/CMakeLists.txt', 'docs/BUILDING.md', 'build/fex-ios/build.sh', 'build/wine-macos/build.sh', 'build/wine-pe/configure-arm64ec.sh') }}
+          # Same reason as the toolchain cache above: a fresh `unified` key
+          # would otherwise miss the native FEX/Wine builds already cached.
+          restore-keys: |
+            native-${{ matrix.variant }}-
+            native-windows-
+            native-linux-
+
+      - name: The LLVM-for-iOS archives the shader compiler links against
+        # Checked here rather than 25 minutes into the chain: dxmt-ios/combine.sh
+        # merges libdxmt_unix.a with toolchains/llvm-ios-build/lib/libLLVM*.a,
+        # and airconv calls into LLVM, so without these archives the app cannot
+        # be linked at all. The step above restores them from the cache the
+        # llvm-ios workflow wrote; if that cache was evicted, run that workflow
+        # again (Actions -> llvm-ios -> Run workflow) instead of hunting a
+        # compile error that is really a missing input.
+        run: |
+          set -euo pipefail
+          lib=toolchains/llvm-ios-build/lib
+          n=$(ls "$lib"/libLLVM*.a 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$n" -gt 0 ]; then
+            echo "$n LLVM-for-iOS archives in $lib"
+          else
+            echo "::error::$lib has no libLLVM*.a - run the llvm-ios workflow (about an hour) and re-run this one"
+            exit 1
+          fi
+
+      - name: Build the native pieces
+        # Only the iOS static libraries are built here. The Windows PE modules
+        # (arm64ec-windows/, aarch64-windows/) are already tracked in git, so
+        # the first linkable app does not need llvm-mingw's PE builds; those
+        # scripts stay available for a from-scratch PE rebuild.
+        run: |
+          set -euo pipefail
+          for s in gnutls-ios/build.sh ffmpeg/build.sh freetype-ios/build.sh fex-ios/build.sh \
+                   wine-macos/build.sh \
+                   ntdll-unix/build.sh wineserver/build.sh win32u-unix/build.sh \
+                   wine-pe/build-ntdll.sh wine-pe/build-universal.sh \
+                   dxmt-ios/build.sh dxmt-ios/combine.sh \
+                   rppairing-ios/build.sh; do
+            echo "=== build/$s ==="
+            bash "build/$s"
+          done
+
+      - name: Stage the generated licence copies
+        # app/Madeira/licenses is a bundled folder reference, but the two
+        # Madeira copies inside it are generated from COPYING and
+        # LICENSE-EXCEPTION.md and are deliberately gitignored, so a fresh
+        # checkout contains neither. The converter dylib is committed, so
+        # build/madeira-d3d12/fetch-converter.sh -- the only caller of
+        # build/stage-licenses.sh -- never runs on a runner, and the
+        # 'Sign bundled dylibs' phase then fails its staleness check.
+        run: bash build/stage-licenses.sh
+
+      - name: Build the app (Debug - the only configuration that runs)
+        run: |
+          set -euo pipefail
+          # MADEIRA_VARIANT_FLAG is consumed by the target's own
+          # SWIFT_ACTIVE_COMPILATION_CONDITIONS setting, which forwards it to
+          # the Swift compiler. Passing a bare MADEIRA_VARIANT_LINUX=1 build
+          # setting, as an earlier revision did, sets nothing anybody reads and
+          # silently produces the Windows variant twice. An empty value is
+          # fine: the setting then expands to nothing.
+          xcodebuild \
+            -project app/Madeira.xcodeproj \
+            -scheme Madeira \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            MADEIRA_VARIANT_FLAG='${{ matrix.variant_flag }}' \
+            MADEIRA_ENGINE_FLAGS='${{ env.engine_flags }}' \
+            MADEIRA_BUNDLE_IDENTIFIER='${{ matrix.bundle_id }}' \
+            build
+
+      - name: Package the unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf Payload dist && mkdir -p Payload dist
+          app=$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name 'Madeira.app' -path '*Debug-iphoneos*' | head -1)
+          test -n "$app" || { echo "::error::no Madeira.app was produced"; exit 1; }
+          cp -R "$app" Payload/
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Madeira.app/Info.plist > dist/bundle-id.txt
+          zip -qry "dist/Madeira-${{ matrix.variant }}-unsigned.ipa" Payload
+          rm -rf Payload
+          ls -la dist
+
+      - name: The IPA is one a sideloader can install
+        # Packaging succeeds for an archive nobody can install, and that is not
+        # hypothetical: build-8 unpacked to 3.5 GiB in 14,136 entries because the
+        # QEMU payload was a whole build tree, SideStore could not re-sign it,
+        # and the app was published anyway. What failed there is a property of
+        # the archive, so the archive is what gets checked - its integrity, its
+        # layout, the architecture of its executable, symlinks that leave the
+        # bundle, and the size a re-signing walk has to face. See
+        # tools/inspect-ipa.py.
+        run: |
+          set -euo pipefail
+          python3 tools/inspect-ipa.py "dist/Madeira-${{ matrix.variant }}-unsigned.ipa"
+
+      - name: Record what was actually built
+        run: |
+          set -euo pipefail
+          {
+            echo "variant: ${{ matrix.variant }}"
+            echo "configuration: Debug"
+            echo "bundle id: $(cat dist/bundle-id.txt)"
+            echo "note: unsigned. Sign it with Sideloadly or SideStore, see GUIDE.md."
+            # Recorded because the IPA's capabilities depend on payloads that
+            # are NOT in git, so a binary alone does not say what it can do.
+            # A "no" here is the first thing to check when a reported feature
+            # does nothing.
+            echo "32-bit Windows farm: ${{ env.i386_farm }}"
+            echo "QEMU engine: ${{ env.qemu }}"
+            echo "engine flags: ${{ env.engine_flags }}"
+          } | tee build-info.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-${{ matrix.variant }}-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+  # A side-loader source, so SideStore can install and re-sign the app
+  # itself instead of anyone downloading IPAs by hand every 7 days. This is what
+  # replaces the hosted preview page.
+  publish:
+    name: Publish IPAs and a SideStore source
+    needs: build
+    # A push or build-only dispatch must never publish into the preserved release
+    # history. Publishing requires an explicit workflow_dispatch choice after
+    # the IPA and source manifest have been reviewed.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to create the release and upload assets.
+      contents: write
+    env:
+      # Every `gh` call below must act on the repository this workflow RUNS in,
+      # not on the repository it checked out.
+      #
+      # This job checks out the source at a pinned `repository:` (the fork, or
+      # the build-host mirror that points at it), so the git remote inside the
+      # workspace is that other repository. `gh` with no --repo reads exactly
+      # that remote, so `gh release create` ran against sheltonSILAS/Madeira
+      # while holding a token minted for the build host -- and got
+      #   HTTP 403: Resource not accessible by integration
+      # on a build that had already produced a perfectly good IPA. That is the
+      # one failure in run 37963666181, and it left the 91 MB IPA as a
+      # 30-day workflow artifact instead of a release anyone could download.
+      # GH_REPO overrides the inferred repository for gh and gh alone; the
+      # checkout, and therefore the source, is untouched.
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: What was actually produced
+        run: ls -la dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" --title "Madeira $tag" \
+            --notes "One app: Windows apps through Wine on FEX-Emu, and Linux environments through QEMU, with a switch between them. Built from ${{ github.sha }}. Unsigned: sign with Sideloadly or SideStore. See GUIDE.md." \
+            dist/*.ipa
+          echo "tag=$tag" >> "$GITHUB_ENV"
+
+      - name: Generate the SideStore source
+        # The tag must match the assets' location or SideStore offers a phantom
+        # update forever, so it is read from the release just created.
+        run: |
+          set -euo pipefail
+          # One IPA, one app. --linux-ipa is deliberately NOT passed: the
+          # unified binary presents both variants, so passing it would publish
+          # a second, near-identical app in the source.
+          python3 tools/make_source.py \
+            --out dist/source.json \
+            --windows-ipa "$(ls dist/Madeira-*-unsigned.ipa | head -1)" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/${{ env.tag }}" \
+            --version "${GITHUB_RUN_NUMBER}.0"
+
+      - name: Attach the source JSON
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ env.tag }}" dist/source.json
+
+      - name: Attach the app icons the source points at
+        # tools/make_source.py writes iconURL as icon.png, icon-windows.png and
+        # icon-linux.png inside this release, but nothing uploaded them, so every
+        # SideStore source showed a broken image. The repository carries one
+        # 1024px app icon; publish it under each name the source asks for.
+        # Three copies rather than gh's file#name rename: this step is cosmetic,
+        # so it must not depend on a gh syntax detail to keep the release green.
+        # Non-fatal for the same reason: a missing image must never be able to
+        # turn a run that already published both IPAs red.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          icons=$(mktemp -d)
+          src="app/Madeira/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+          for n in icon.png icon-windows.png icon-linux.png; do cp "$src" "$icons/$n"; done
+          if ! gh release upload "${{ env.tag }}" "$icons/icon.png" "$icons/icon-windows.png" "$icons/icon-linux.png" --clobber; then
+            echo "::warning::the icons were not attached; source.json will show broken images"
+          fi
+
+      - name: Where to find it
+        run: |
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/${{ env.tag }}"
+          echo "SideStore source: https://github.com/${{ github.repository }}/releases/download/${{ env.tag }}/source.json"

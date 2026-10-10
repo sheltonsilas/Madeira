@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Madeira Converter Exception: see LICENSE-EXCEPTION.md
+#
+# swift-typecheck.yml - compile the app's Swift, and stop before linking.
+#
+# WHY THIS EXISTS
+# `build.yml` is the truth about whether the app builds, and it takes a long
+# time to tell it: the native pieces (FEX, Wine, DXMT and the rest) are rebuilt
+# or restored first, and the Swift compiler only runs after all of that. When the
+# tree is edited on a machine with no Swift compiler - see docs/WITHOUT_A_MAC.md -
+# a typo in one view costs the whole of that.
+#
+# `xcodebuild` cannot be used for a quick answer on its own, because it links:
+# it wants the archives above to exist. `swiftc -typecheck` does not link. It
+# parses every file, resolves every name and checks every call, which is
+# everything that catches a mistake in hand-written Swift, and it needs only the
+# iOS SDK that ships with Xcode.
+#
+# WHAT IT CANNOT CATCH
+#   * Anything about the C and C++ code behind the bridging header. Those headers
+#     are declarations only; whether the symbols exist is a linker question.
+#   * The Xcode project itself: a file that is on disk but not in the target is
+#     invisible here. `tools/check_pbxproj.py` and build.yml's verify job cover
+#     that.
+#   * Anything that only fails at runtime, which is most of what this app does.
+#
+# So this is a fast "your Swift compiles" signal, not a substitute for build.yml.
+
+name: swift-typecheck
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["app/**/*.swift"]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Swift type-check (no link)
+    runs-on: macos-15
+    # Nothing is built here, only checked: a few minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select an Xcode with the iOS 26 SDK
+        # The same script the app build uses, and for the same reason: the
+        # image's default Xcode is 16.4 with the iOS 18.5 SDK, and this app is
+        # compiled against the iOS 26 SDK. Type-checking against the older one
+        # would report the app's own `#available(iOS 26.0, *)` branches as
+        # unknown versions and disagree with the real build about availability.
+        run: bash build/ci/select-xcode.sh
+
+      - name: Type-check the app's Swift
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "sdk:       $SDK"
+          echo "sdk ver:   $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "xcode:     $(xcodebuild -version | head -1)"
+
+          # The app target's sources. app/MadeiraJITHelper is a separate target
+          # with its own bridging header and is checked by nothing here.
+          #
+          # A list in a file rather than a bash array: `run:` on macOS is bash
+          # 3.2, which has no mapfile, and that is how this step first failed.
+          find app/Madeira -name '*.swift' | sort -u > /tmp/sources.txt
+          count=$(wc -l < /tmp/sources.txt | tr -d ' ')
+          echo "swift files: $count"
+          test "$count" -gt 50 || {
+            echo "::error::only $count Swift files found - the checkout is wrong, not the code"
+            exit 1
+          }
+
+          # -import-objc-header is what makes the C functions the app calls
+          # (wine_process_start, madeira_set_vsync_locked, ...) visible; without
+          # it every one of them is an unresolved identifier.
+          # -F is the bundled StikJIT framework, the app's only non-system import.
+          # -I app/Madeira resolves the bridging header's own siblings
+          # (Winios/Winios.h, SwiftSteam/lzma_shim.h).
+          #
+          # TWO PASSES, because a `#if`-guarded half of the app is invisible to a
+          # single one. The engine flags are set by build.yml only when the QEMU
+          # payload has been fetched, so the default pass type-checks the app as a
+          # build with no engine - and QEMULauncher's whole launcher, its dlopen,
+          # its sockets and its argument vector, would never be compiled by
+          # anything until a full payload build. A payload build is the most
+          # expensive run there is; this pass exists so the code is checked by the
+          # cheap one.
+          #
+          # The flag set is written out rather than hidden behind a variable: it
+          # has to match the `engine_flags` build.yml exports, and a mismatch here
+          # would silently check the wrong half.
+          # shellcheck disable=SC2046  # the paths contain no spaces
+          check() {
+            echo "type-check ($1):"
+            xcrun swiftc -typecheck \
+              -swift-version 5 \
+              -sdk "$SDK" \
+              -target arm64-apple-ios17.0 \
+              -import-objc-header app/Madeira/Madeira-Bridging-Header.h \
+              -F app/Frameworks/StikJIT.xcframework/ios-arm64 \
+              -I app/Madeira \
+              $2 \
+              $(cat /tmp/sources.txt)
+          }
+
+          check "engine absent" ""
+          check "engine present" \
+            "-D MADEIRA_HAS_QEMU -D MADEIRA_HAS_QEMU_TCGI -D MADEIRA_HAS_QEMU_LAUNCHER"
+
+          echo "type-check clean: $count files, both engine configurations"

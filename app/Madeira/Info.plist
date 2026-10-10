@@ -38,6 +38,22 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Windows program</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.willfaust.madeira.windows-executable</string>
+				<string>com.willfaust.madeira.windows-installer</string>
+			</array>
+		</dict>
+	</array>
 	<key>GCSupportsGameMode</key>
 	<true/>
 	<key>LSApplicationCategoryType</key>
@@ -50,6 +66,62 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.willfaust.madeira.windows-executable</string>
+			<key>UTTypeDescription</key>
+			<string>Windows program</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.executable</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>exe</string>
+					<string>com</string>
+					<string>scr</string>
+					<string>bat</string>
+					<string>cmd</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-msdownload</string>
+					<string>application/x-msdos-program</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.willfaust.madeira.windows-installer</string>
+			<key>UTTypeDescription</key>
+			<string>Windows installer package</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>msi</string>
+					<string>msp</string>
+					<string>msu</string>
+					<string>msix</string>
+					<string>appx</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-msi</string>
+					<string>application/x-msdownload</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSBonjourServices</key>
