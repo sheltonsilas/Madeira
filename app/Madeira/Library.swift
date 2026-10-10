@@ -4,6 +4,7 @@ import UIKit
 import Darwin
 import ImageIO
 import Combine
+import WebKit
 
 // ============================================================================
 // Library front end.
@@ -2395,6 +2396,8 @@ struct LibraryView: View {
         jit.connectionProblem.flatMap { model.error == $0.message ? $0 : nil }
     }
     @State private var browser = false
+    @State private var downloadBrowser = false
+    @State private var importInstaller = false
     @State private var selected: LibraryEntry?
     @State private var search = ""
     /// The Settings tab's own search text, kept apart from the library's.
@@ -2460,7 +2463,7 @@ struct LibraryView: View {
         // The system search field (Liquid Glass on iOS 26) in the title's place, left
         // of the library's buttons, on both tabs; each tab keeps its own text.
         .background(LibraryNavSearch(text: tab == 0 ? $search : $settingsSearch,
-                                     placeholder: tab == 0 ? "Search your library" : "Search settings")
+                                     placeholder: tab == 0 ? "Search your apps" : "Search settings")
             .frame(width: 0, height: 0))
         // Each tab is hosted by the tab bar controller, so a toolbar set inside a tab
         // would not reach the navigation bar: the library's lives here.
@@ -2524,8 +2527,58 @@ struct LibraryView: View {
                 }
             } label: { Label("Library options", systemImage: "line.3.horizontal.decrease") }
         }
-        ToolbarItem(placement: .topBarTrailing) { Button { browser = true } label: { Label("Add executable", systemImage: "plus") } }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("Download Windows apps", systemImage: "globe") { downloadBrowser = true }
+                Button("Import .exe or .msi from Files", systemImage: "folder.badge.plus") { importInstaller = true }
+                Button("Choose an app in Wine", systemImage: "list.bullet.rectangle") { browser = true }
+            } label: { Label("Add app", systemImage: "plus") }
+        }
     }
+    private func importInstallers(_ result: Result<[URL], Error>) {
+        do {
+            for source in try result.get() {
+                let ext = source.pathExtension.lowercased()
+                guard ext == "exe" || ext == "msi" else {
+                    throw LibraryError.message("Choose a Windows .exe or .msi installer.")
+                }
+                guard source.startAccessingSecurityScopedResource() else {
+                    throw LibraryError.message("iPadOS did not grant access to \(source.lastPathComponent). Try choosing it again in Files.")
+                }
+                defer { source.stopAccessingSecurityScopedResource() }
+                let destination = try installerDestination(named: source.lastPathComponent)
+                try FileManager.default.copyItem(at: source, to: destination)
+                addDownloadedInstaller(destination)
+            }
+        } catch {
+            model.error = "Could not import the installer: " + error.localizedDescription
+        }
+    }
+
+    private func addDownloadedInstaller(_ url: URL) {
+        do {
+            let ext = url.pathExtension.lowercased()
+            guard ext == "exe" || ext == "msi" else { return }
+            var entry: LibraryEntry
+            if ext == "msi" {
+                let windowsPath = "C:\\Downloads\\" + url.lastPathComponent
+                entry = LibraryEntry(title: "Install " + url.deletingPathExtension().lastPathComponent,
+                                     relativePath: "windows/system32/msiexec.exe", bits: 64)
+                entry.arguments = "/i \"" + windowsPath + "\""
+            } else {
+                entry = try LibraryModel.inspect(url)
+                entry.title = url.deletingPathExtension().lastPathComponent
+            }
+            model.save(entry)
+        } catch {
+            model.error = "The file was saved, but Madeira could not add it to the app library: " + error.localizedDescription
+        }
+    }
+
+    private func installerDestination(named name: String) throws -> URL {
+        try InstallerFileStore.destination(named: name)
+    }
+
     @ToolbarContentBuilder private var settingsToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Button(action: enableJIT) {
@@ -2680,15 +2733,15 @@ struct LibraryView: View {
                 }
                 if SteamGamesSection.shown {
                     VStack(alignment: .leading, spacing: 14) {
-                        // Games are added with the + in the navigation bar.
-                        LibrarySectionHeader(title: "Other games", count: entries.count,
+                        // Programs can be installed from a downloaded or Files-imported installer.
+                        LibrarySectionHeader(title: "Other Windows apps", count: entries.count,
                                              collapsed: SteamGamesSection.collapsible ? $hideOthers : nil) { EmptyView() }
                         if hideOthers && SteamGamesSection.collapsible {
                             EmptyView()
                         } else if entries.isEmpty {
                             Text(search.isEmpty
-                                 ? "Copy a game's folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe."
-                                 : "No other games match your search.")
+                                 ? "Download a Windows installer or import an .exe/.msi from Files. Madeira keeps installers in C:\\Downloads."
+                                 : "No other Windows apps match your search.")
                                 .foregroundStyle(.secondary)
                         } else {
                             cells(entries, width: viewport.size.width)
@@ -2699,7 +2752,7 @@ struct LibraryView: View {
                                           part: steamFirst ? .notInstalled : .all, open: { selected = $0 })
                     }
                 } else if model.entries.filter({ $0.desktop != true && $0.steamAppID == nil }).isEmpty {
-                    ContentUnavailableView("Make yourself at home", systemImage: "gamecontroller", description: Text("Copy a game's folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe."))
+                    ContentUnavailableView("Add your first Windows app", systemImage: "square.and.arrow.down", description: Text("Download an .exe or .msi, or import one from Files. Installers are kept in C:\\Downloads inside your Wine prefix."))
                 } else {
                     cells(entries, width: viewport.size.width)
                 }
@@ -2729,6 +2782,12 @@ struct LibraryView: View {
             NavigationStack { ExecutableBrowser(folder: LibraryModel.drive) { entry in
                 model.save(entry); browser = false; selected = entry
             } }
+        }
+        .sheet(isPresented: $downloadBrowser) {
+            NavigationStack { WindowsDownloadBrowser { addDownloadedInstaller($0) } }
+        }
+        .fileImporter(isPresented: $importInstaller, allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
+            importInstallers(result)
         }
         .sheet(item: $selected) { entry in
             // The details page stays up until the session's starting screen takes
@@ -4366,5 +4425,228 @@ enum EndedSessionSurface {
         hiddenByUs = false
         _ = winios_compositor_set_hidden(0)
         LogStore.shared.log("[library-surface] desktop shown for the new session")
+    }
+}
+
+/// Keeps imported and browser-downloaded installers in one persistent Wine
+/// prefix folder that is also exposed by iOS Files sharing.
+private enum InstallerFileStore {
+    static func destination(named name: String) throws -> URL {
+        let folder = LibraryModel.drive.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        // Treat both Windows and POSIX separators as untrusted input. A download
+        // server can suggest arbitrary filenames; never let one choose a path.
+        let leaf = name.components(separatedBy: CharacterSet(charactersIn: "/\\")).last ?? ""
+        let windowsInvalid = CharacterSet(charactersIn: "<>:\"|?*")
+        let safeName = leaf.unicodeScalars.reduce(into: "") { result, scalar in
+            guard !CharacterSet.controlCharacters.contains(scalar), !windowsInvalid.contains(scalar) else { return }
+            result.append(String(scalar))
+        }.trimmingCharacters(in: .whitespacesAndNewlines)
+        var normalized = safeName.isEmpty || safeName == "." || safeName == ".." ? "download" : safeName
+        let reserved = Set(["CON", "PRN", "AUX", "NUL"] + (1...9).flatMap { ["COM\($0)", "LPT\($0)"] })
+        if reserved.contains(URL(fileURLWithPath: normalized).deletingPathExtension().lastPathComponent.uppercased()) {
+            normalized = "_" + normalized
+        }
+        let sourceName = URL(fileURLWithPath: normalized)
+        var destination = folder.appendingPathComponent(normalized)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: destination.path) {
+            let ext = sourceName.pathExtension
+            let filename = sourceName.deletingPathExtension().lastPathComponent + " (\(suffix))" + (ext.isEmpty ? "" : ".\(ext)")
+            destination = folder.appendingPathComponent(filename)
+            suffix += 1
+        }
+        return destination
+    }
+}
+
+// A WKWebView download surface for Windows installer files. Downloads land in
+// Documents/wine/drive_c/Downloads so they are both visible in Files and usable
+// as C:\Downloads inside the persistent Wine prefix. The page itself runs on
+// iPadOS; installers still launch through Wine.
+struct WindowsDownloadBrowser: View {
+    var installerSaved: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = "https://www.mozilla.org/en-US/firefox/all/"
+    @State private var navigateToken = 0
+    @State private var backToken = 0
+    @State private var canGoBack = false
+    @State private var status = "Downloads are saved to Files › Madeira › wine › drive_c › Downloads."
+    @State private var downloaded: [URL] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button { backToken += 1 } label: { Image(systemName: "chevron.left") }
+                    .disabled(!canGoBack).accessibilityLabel("Go back")
+                TextField("Website address", text: $address)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).submitLabel(.go)
+                    .onSubmit { navigateToken += 1 }
+                Button { navigateToken += 1 } label: { Image(systemName: "arrow.right") }
+                    .accessibilityLabel("Go to website")
+            }
+            .padding(12)
+            .background(.bar)
+
+            Text("Web pages open on iPad. Downloaded Windows apps launch in Wine.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+
+            InstallerWebView(address: $address, navigateToken: $navigateToken, backToken: $backToken,
+                             canGoBack: $canGoBack, status: $status,
+                             downloaded: $downloaded, installerSaved: installerSaved)
+                .background(Color(uiColor: .systemBackground))
+
+            HStack(spacing: 10) {
+                Image(systemName: "folder.badge.arrow.down").foregroundStyle(.tint)
+                Text(status).font(.footnote).lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(.bar)
+        }
+        .navigationTitle("Get Windows apps")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+            ToolbarItem(placement: .topBarTrailing) {
+                if !downloaded.isEmpty { Text("\(downloaded.count) saved").font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+    }
+}
+
+private struct InstallerWebView: UIViewRepresentable {
+    @Binding var address: String
+    @Binding var navigateToken: Int
+    @Binding var backToken: Int
+    @Binding var canGoBack: Bool
+    @Binding var status: String
+    @Binding var downloaded: [URL]
+    var installerSaved: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        view.navigationDelegate = context.coordinator
+        context.coordinator.webView = view
+        context.coordinator.load(address, in: view)
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {
+        context.coordinator.parent = self
+        if context.coordinator.lastBackToken != backToken {
+            context.coordinator.lastBackToken = backToken
+            if view.canGoBack { view.goBack() }
+        }
+        if context.coordinator.lastNavigateToken != navigateToken {
+            context.coordinator.lastNavigateToken = navigateToken
+            context.coordinator.load(address, in: view)
+        }
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+        var parent: InstallerWebView
+        weak var webView: WKWebView?
+        var lastNavigateToken = 0
+        var lastBackToken = 0
+        private var destinations: [ObjectIdentifier: URL] = [:]
+
+        init(parent: InstallerWebView) { self.parent = parent }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            let ext = navigationAction.request.url?.pathExtension.lowercased() ?? ""
+            if navigationAction.shouldPerformDownload || ["exe", "msi"].contains(ext) {
+                decisionHandler(.download)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
+
+        func load(_ rawAddress: String, in webView: WKWebView) {
+            let trimmed = rawAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            let candidate = trimmed.contains("://") ? trimmed : "https://" + trimmed
+            guard let url = URL(string: candidate), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                DispatchQueue.main.async { self.parent.status = "Enter a valid website address." }
+                return
+            }
+            DispatchQueue.main.async {
+                self.parent.address = url.absoluteString
+                self.parent.status = "Opening \(url.host ?? url.absoluteString)…"
+            }
+            webView.load(URLRequest(url: url))
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            let ext = navigationResponse.response.url?.pathExtension.lowercased() ?? ""
+            if ["exe", "msi"].contains(ext) || !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            begin(download, named: navigationResponse.response.suggestedFilename ?? "file")
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            begin(download, named: navigationAction.request.url?.lastPathComponent ?? "file")
+        }
+
+        private func begin(_ download: WKDownload, named name: String) {
+            download.delegate = self
+            DispatchQueue.main.async { self.parent.status = "Downloading \(name)…" }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            let canGoBack = webView.canGoBack
+            let status = webView.url?.host.map { "Browsing \($0). Downloads save into the Wine prefix." } ?? "Page loaded."
+            DispatchQueue.main.async {
+                self.parent.canGoBack = canGoBack
+                self.parent.status = status
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            DispatchQueue.main.async { self.parent.status = "Page could not be opened: \(error.localizedDescription)" }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            DispatchQueue.main.async { self.parent.status = "Page could not be opened: \(error.localizedDescription)" }
+        }
+
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                      suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+            do {
+                let destination = try InstallerFileStore.destination(named: suggestedFilename)
+                destinations[ObjectIdentifier(download)] = destination
+                completionHandler(destination)
+            } catch {
+                DispatchQueue.main.async { self.parent.status = "Could not prepare the Downloads folder: \(error.localizedDescription)" }
+                completionHandler(nil)
+            }
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            guard let destination = destinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
+            DispatchQueue.main.async {
+                self.parent.downloaded.append(destination)
+                self.parent.status = "Saved \(destination.lastPathComponent) to C:\\Downloads."
+                self.parent.installerSaved(destination)
+            }
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            destinations.removeValue(forKey: ObjectIdentifier(download))
+            DispatchQueue.main.async { self.parent.status = "Download failed: \(error.localizedDescription)" }
+        }
     }
 }
