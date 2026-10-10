@@ -34,15 +34,25 @@ a third-party web page.
 
 ## Free Apple Account limits
 
-SideStore documents the free account's normal seven-day app signing period and
-three simultaneously installed apps (including SideStore). Plan to refresh
+The [SideStore FAQ](https://docs.sidestore.io/docs/faq) documents the free
+account's normal seven-day app signing period and three simultaneously
+installed apps (including SideStore). Plan to refresh
 Madeira before its signature expires and leave an app slot available. A paid
 Apple Developer Program membership changes these provisioning limits; it does
 not guarantee that Apple will authorize every private entitlement.
 
+With a free Apple ID, assume the increased-memory entitlement is unavailable
+unless the final signature proves otherwise. [Apple's entitlement reference](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.kernel.increased-memory-limit)
+says the higher limit is available only on some device models, and the app must
+still work when extra memory is not granted. Madeira must keep a usable
+interpreter path; that entitlement cannot make a missing Linux guest or
+incomplete runtime work.
+
 JIT depends on entitlements and provisioning that survive signing. The source
 project requests `get-task-allow`, JIT, and increased-memory capabilities, but
 the final signed app must be checked after Sideloadly or SideStore re-signs it.
+[Apple documents](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+that provisioning profiles authorize the final entitlements.
 If the signer removes a required entitlement, JIT can fail even though the
 source is configured correctly. Do not infer JIT support from an IPA filename
 or an in-app green indicator alone.

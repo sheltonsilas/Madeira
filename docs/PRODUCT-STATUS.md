@@ -40,6 +40,16 @@ not be claimed as delivered. Browser download behavior is not yet device-tested.
 | Linux guest | No QEMU/UTM guest integration, Ubuntu rootfs, Linux environment manager, or Linux first-run flow in this baseline | Missing; no Linux desktop is delivered by these changes |
 | IPA | No complete dependency closure or independent workflow in the checkout | Not produced |
 
+## Licensing check for this iteration
+
+No StikDebug AGPL source or UTM source was added. The existing JIT integration
+uses the bundled StikJIT 1.9.0 XCFramework under MPL-2.0, plus `idevice` under
+MIT; the repository already carries their notices in `THIRD-PARTY-NOTICES.md`
+and `app/Madeira/legal/`. Madeira's existing GPL-3.0-or-later licensing and
+exceptions remain as documented in `docs/LICENSING.md`. This is a source and
+notice audit, not legal advice or a replacement for the upstream document's
+requested legal review before release.
+
 ## Linux architecture decision
 
 The existing app embeds Wine and FEX in its iOS process. That is not a Linux
