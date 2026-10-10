@@ -6,7 +6,7 @@
 
 Source checks that the library page is laid out as the fork's sectioned library:
 Steam (the games being downloaded and the games Steam installed, collapsed by the
-title), its Not installed group (folding on its own), then Other games (the
+title), its Not installed group (folding on its own), then Other Windows apps (the
 games you added, with Add a game); one grid without the Steam section; the
 texts; the collapse switch MADEIRA_LIBRARY_COLLAPSE and the remembered states;
 search and layout apply to every section; pull to refresh; the log line.
@@ -45,36 +45,36 @@ body = between(section, '    var body: some View {', '    private func cell(')
 
 # ------------------------------------------------------------------ order of the page
 steam_at = page.index('SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,')
-others_at = page.index('LibrarySectionHeader(title: "Other games"')
+others_at = page.index('LibrarySectionHeader(title: "Other Windows apps"')
 require(page.index('Label("Desktop", systemImage: "desktopcomputer")') < steam_at < others_at,
-        'page order: Desktop, then Steam, then Other games')
+        'page order: Desktop, then Steam, then Other Windows apps')
 require('let steamFirst = MadeiraDock.enabled && SteamGamesSection.hasInstalled' in page[:steam_at]
         and 'part: .installed, open: { selected = $0 })' in page[steam_at:others_at]
         and 'if SteamGamesSection.shown {' in page[steam_at:others_at],
-        'Other games is a section exactly when the Steam section is shown; installed Steam games come first')
+        'Other Windows apps is a section exactly when the Steam section is shown; installed Steam games come first')
 require('part: steamFirst ? .notInstalled : .all, open: { selected = $0 })' in page[others_at:]
         and 'if MadeiraDock.enabled {' in page[others_at:],
-        'Not installed follows Other games; with nothing installed the whole Steam section does')
+        'Not installed follows Other Windows apps; with nothing installed the whole Steam section does')
 single = page[others_at:]
-require('ContentUnavailableView("Make yourself at home"' in single and single.count('cells(entries, width: viewport.size.width)') == 2,
-        'without the Steam section: one grid of the games you added, or the empty-library message')
+require('ContentUnavailableView("Add your first Windows app"' in single and single.count('cells(entries, width: viewport.size.width)') == 2,
+        'without the Steam section: one grid of the apps you added, or the empty-library message')
 require('.refreshable { await SteamGamesSection.refresh() }' in page, 'pull down on the library refreshes the Steam section')
 
-# ------------------------------------------------------------------ Other games
-others = between(page, 'LibrarySectionHeader(title: "Other games"', '} else if model.entries.filter(')
+# ------------------------------------------------------------------ Other Windows apps
+others = between(page, 'LibrarySectionHeader(title: "Other Windows apps"', '} else if model.entries.filter(')
 require('count: entries.count' in others and 'collapsed: SteamGamesSection.collapsible ? $hideOthers : nil' in others,
-        'Other games: count and a collapsible title (MADEIRA_LIBRARY_COLLAPSE)')
+        'Other Windows apps: count and a collapsible title (MADEIRA_LIBRARY_COLLAPSE)')
 require('Label("Add a game"' not in others and '{ EmptyView() }' in others and 'browser = true' in page,
-        'Other games: no Add a game button of its own; the + in the navigation bar opens the executable browser')
-require('"Copy a game\'s folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe."' in others
-        and '"No other games match your search."' in others, 'Other games: empty and no-match texts')
+        'Other Windows apps: the navigation menu opens the executable browser')
+require('"Download a Windows installer or import an .exe/.msi from Files.' in others
+        and '"No other Windows apps match your search."' in others, 'Other Windows apps: empty and no-match texts')
 require(others.index('if hideOthers && SteamGamesSection.collapsible {') < others.index('} else if entries.isEmpty {')
-        < others.index('cells(entries, width: viewport.size.width)'), 'Other games: collapsed, empty, then the games')
-require('@AppStorage("madeiraLibraryHideOthers") private var hideOthers = false' in view, 'Other games: remembered collapsed state')
+        < others.index('cells(entries, width: viewport.size.width)'), 'Other Windows apps: collapsed, empty, then the apps')
+require('@AppStorage("madeiraLibraryHideOthers") private var hideOthers = false' in view, 'Other Windows apps: remembered collapsed state')
 entries = between(view, 'private var entries: [LibraryEntry] {', 'var body: some View {')
 require('$0.desktop != true && $0.steamAppID == nil' in entries and 'localizedCaseInsensitiveContains(search)' in entries,
-        'Other games: the games you added (no Steam game, no desktop), filtered by the search')
-require('LibraryCells(items: items, layout: layout, width: viewportWidth)' in view, "Other games: the library's layout")
+        'Other Windows apps: added apps (no Steam entry or desktop), filtered by the search')
+require('LibraryCells(items: items, layout: layout, width: viewportWidth)' in view, "Other Windows apps: the library's layout")
 
 # ------------------------------------------------------------------ Steam and Not installed
 require('LibrarySectionHeader(title: "Steam", count: installed.count,' in body and
@@ -112,7 +112,7 @@ require(re.search(r'\[library-sections\][^"]*\\\((?!SteamOwnedLibrary\.enabled|S
         'the log line has flags only')
 
 # ------------------------------------------------------------------ docs
-require('MADEIRA_LIBRARY_COLLAPSE' in docs and '**Other games**' in docs and '**Not installed**' in docs,
+require('MADEIRA_LIBRARY_COLLAPSE' in docs and '**Other Windows apps**' in docs and '**Not installed**' in docs,
         'docs/LIBRARY.md: the sections and the switch')
 require('Pull down' in steam_docs, 'docs/STEAM_LIBRARY.md: pull down to refresh')
 

@@ -22,7 +22,7 @@ are, unmodified, inside a single iOS app.
 
 | Layer | What it does |
 |---|---|
-| **[FEX-Emu](https://github.com/FEX-Emu/FEX)** | Translates the game's x86 and x86-64 code to ARM64 as it runs. |
+| **[FEX-Emu](https://github.com/FEX-Emu/FEX)** | Translates x86 and x86-64 Windows application code to ARM64 as it runs. |
 | **[Wine](https://www.winehq.org/)** 11.4 | Provides Windows. It is built for ARM64EC, so Wine itself runs natively and only the game's own code is translated. 32-bit games run through WoW64. |
 | **[DXMT](https://github.com/3Shain/DXMT)** | Draws Direct3D 9, 10 and 11 with Metal. |
 | **[madeira-d3d12](madeira-d3d12)** | Madeira's own Direct3D 12 implementation on Metal, converting DXIL shaders at run time with Apple's Metal Shader Converter. |
@@ -32,7 +32,8 @@ Wine's server runs as a thread instead of a separate program.
 
 ## Features
 
-- **Game library** with artwork, search and a Windows desktop session.
+- **Windows app library** with artwork, search and a Windows desktop session.
+- **Installer intake** for downloading or importing `.exe` and `.msi` files into the Files-visible Wine Downloads folder. The download view uses iPadOS WebKit; it is not a Wine browser.
 - **Steam**: sign in, browse the games you own, install and update them, and
   start them through Valve's own Windows Steam client (Madeira Dock).
 - **Steam Cloud saves**: saves sync with Steam Cloud when Madeira starts and

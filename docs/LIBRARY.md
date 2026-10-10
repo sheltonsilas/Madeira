@@ -1,6 +1,6 @@
 # Library front end
 
-Madeira starts in a game library. The original diagnostic screen (the
+Madeira starts in a Windows app library. The original diagnostic screen (the
 "developer interface") is still there: **Settings › Interface › Use developer
 interface** switches to it, and its **Use New Interface** button switches back.
 Either change applies at the next start (close Madeira in the app switcher and
@@ -12,15 +12,22 @@ The code is `app/Madeira/Library.swift` and `app/Madeira/GuestDisplay.swift`
 library HUD inside `TouchControlsOverlay`, and `MetalBackedView`'s layout and
 touch mapping).
 
-## Adding games
+## Adding Windows apps
 
-Copy a game's whole folder into **Madeira › wine › drive_c** with the Files app,
-tap **+** and choose its `.exe`, or a `.bat`/`.cmd` batch file (ml1163). Only x86
-and x64 PE executables and batch files inside drive_c can be added; the library
-stores the path relative to drive_c, so a changed app container path does not
-break entries. Adding an entry installs nothing. A batch file gets a **Batch**
-badge and, like every entry, starts directly by default (see **Launch** below).
+Use **+** to download a Windows installer in the built-in iPad download view or
+import an `.exe`/`.msi` from Files. Downloaded and imported files are stored in
+`Madeira/wine/drive_c/Downloads` (shown as `C:\Downloads` in Wine). An `.exe`
+becomes a launch entry; an `.msi` becomes an install entry that starts Wine's
+`msiexec /i`. The web view runs on iPadOS; it is not a Windows browser running
+under Wine. Browser downloads and installer compatibility require device
+verification.
 
+For apps already installed into the prefix, copy the app folder into
+**Madeira ??? wine ??? drive_c** with Files, then use **+** to choose its `.exe` or a
+`.bat`/`.cmd` batch file. Only x86 and x64 PE executables and batch files inside
+drive_c can be added; the library stores paths relative to drive_c. Adding an
+`.exe` entry does not install anything. A batch file gets a **Batch** badge and,
+like every entry, starts directly by default (see **Launch** below).
 The library reads the executable's PE imports (and those of the DLLs next to
 it, plus bounded scans for dynamically loaded renderer DLL names) to show a
 graphics-API badge, and measures the install folder's size. The badge names an
@@ -51,12 +58,12 @@ Removing an entry never removes the game's files or saves.
   **Steam** (the Steam games being downloaded and the games Steam has
   installed, with their count; a **Sign in to Steam** card when signed out),
   its **Not installed** group (the account's other games, with their count),
-  then **Other games** (the games you added; **+** in the navigation bar adds one). Tapping
-  **Steam** or **Other games** collapses it; **Not installed** folds on its
+  then **Other Windows apps** (the Windows apps you added; **+** in the navigation bar adds one). Tapping
+  **Steam** or **Other Windows apps** collapses it; **Not installed** folds on its
   own, open by default; each state is remembered. Search, the layout and, for
   installed games, Sort by apply to every section. Pull down to read the
   Steam install records and the account's library again. Without Madeira
-  Dock the games you added are one grid.
+  Dock the Windows apps you added are one grid.
 - Grid cards: a game that is not installed shows its artwork darkened, with a
   download glyph on a soft circle of blur. Every grid card throws ambient
   light on the page around it, like an LED strip behind a TV: its artwork's own
@@ -361,14 +368,14 @@ one-session-per-run rule. That session is not added to the library.
 
 **Steam games in the library** (`app/Madeira/SteamGames.swift`). When Madeira
 Dock is available, the library shows a **Steam** section above **Other
-games**, the games you added. It lists the games Steam has installed in the
+games**, the Windows apps you added. It lists the games Steam has installed in the
 prefix, exactly as Dock's own discovery finds them (`appmanifest_<appid>.acf`
 in `C:\Program Files (x86)\Steam\steamapps` and the other C: libraries its
 `libraryfolders.vdf` lists), and, once you are signed in, under **Not
 installed**, the account's owned games that are not installed yet, which are
 installed from their download sheet (`docs/STEAM_LIBRARY.md`); a game being
 downloaded moves up to the installed games. The section follows the library's
-search and layout and collapses like Other games. Artwork comes from Steam's
+search and layout and collapses like Other Windows apps. Artwork comes from Steam's
 public store CDN.
 An installed game opens its **Game details** page (above): the game is a
 library entry with its own settings, listed only in the Steam section, and its
@@ -414,7 +421,7 @@ menu owns input, the game sees a connected pad at rest.
 | `MADEIRA_SESSION_DIAGNOSTICS` | off | `1` shows the in-game menu's Diagnostics: frame capture (render-target pixels to `Documents/capture`) and GPU sync, for Direct3D 12 games |
 | `MADEIRA_FRONTEND_KEYBOARD` | on | Keyboard opens the game view's own keyboard instead of the key window |
 | `MADEIRA_ONBOARDING` | on | first-run setup never opens, and Settings › JIT/Steam have no **Run setup again** |
-| `MADEIRA_LIBRARY_COLLAPSE` | on | the **Steam** and **Other games** titles do not collapse (**Not installed** still folds) |
+| `MADEIRA_LIBRARY_COLLAPSE` | on | the **Steam** and **Other Windows apps** titles do not collapse (**Not installed** still folds) |
 | `MADEIRA_LIBRARY_AMBIENT` | on | no ambient light around the library's grid cards |
 
 Opt-in (`env.NAME = 1`), off by default:
