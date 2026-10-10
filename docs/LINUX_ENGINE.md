@@ -77,24 +77,65 @@ The engine is not linked. It is **embedded and dlopened**:
 1. `linux-engine.yml` publishes `sysroot-iOS-TCI-arm64` as the release asset
    `qemu-ios-tci-arm64.tar.gz` (tag `payloads`). A release asset rather than the
    artifact, because the artifact expires after fourteen days and an app build
-   in another repository cannot read it at all.
+   in another repository cannot read it at all. It is **trimmed before it is
+   tarred** - see "The payload is a build tree" below.
 2. `build.yml` fetches it with `build/ci/fetch-payload.sh` into
    `app/Madeira/qemu-ios/`, which is a **folder reference** in the target, so
-   the sysroot ships verbatim in the bundle.
+   the sysroot ships verbatim in the bundle. It is trimmed there too, so an
+   asset published before the trim existed still ships correctly.
 3. The same step exports `MADEIRA_ENGINE_FLAGS`, and
    `SWIFT_ACTIVE_COMPILATION_CONDITIONS` forwards it, so `MADEIRA_HAS_QEMU`,
    `MADEIRA_HAS_QEMU_TCGI` and `MADEIRA_HAS_QEMU_LAUNCHER` reach the Swift
    compiler. Without the payload the variable is empty and the app says the
    engine is absent - which is true.
 
-`tools/add_engine_embed.py` makes the two project-file edits and checks them
-(`--check`, run by build.yml's verify job).
+`tools/add_engine_embed.py` makes the three project-file edits and checks them
+(`--check`, run by build.yml's verify job): the folder reference, the flag
+forward, and `@executable_path/qemu-ios/Frameworks` in the app's
+`LD_RUNPATH_SEARCH_PATHS`.
 
 Why dlopen rather than link: a static link adds a 400 MB archive and every
 dependency framework to the link line, each with its own install names to
 rewrite; `--enable-shared-lib` exports exactly the three entry points a driver
 needs (`qemu_init`, `qemu_main_loop`, `qemu_cleanup`); and a dlopen failure is
 reported where it happens instead of reading as a broken toolchain.
+
+### The payload is a build tree, and the framework is the part that loads
+
+UTM's sysroot is what its build directory looks like, not what its app runs,
+and the difference matters twice over.
+
+The same libraries are in it **twice**. Under `lib/` they name themselves and
+their dependencies with the absolute path of the machine that built them -
+`/Users/runner/work/.../utm/sysroot-iOS-TCI-arm64/lib/libglib-2.0.0.dylib` -
+which resolves on no device, and the copies are plain files beside `.a`
+archives, gstreamer plugin directories and 1,093 headers. Under `Frameworks/`
+the same libraries are `@rpath/<name>.framework/<name>`, each in a bundle with
+an `Info.plist`, and those are the ones a device can open. So the launcher
+dlopens `Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu` and
+`lib/` is deleted before packaging.
+
+Nothing in the payload carries an `LC_RPATH`, so the `@rpath` names have to be
+resolved against a search path the app provides: `@executable_path/qemu-ios/Frameworks`
+in the app target. Without it the engine opens and dyld then cannot find glib.
+
+And it ships all seven simulation targets when one is used. Measured on the
+published asset (398,119,937 bytes) and on the IPA built from it:
+
+| | whole payload | trimmed |
+|---|---|---|
+| sysroot | 3,010 MiB in 12,442 files | **~305 MiB in ~250 files** |
+| of which `lib/` | 1,331 MiB | 0 (the build tree) |
+| of which `Frameworks/` | 1,289 MiB | 233 MiB (one target, not seven) |
+| of which `share/` | 354 MiB in 10,712 files | ~70 MiB (`qemu/` firmware and keymaps, `glib-2.0/` schemas) |
+| build-8 IPA | 534 MB, unpacking to 3.5 GiB in 14,136 entries | one a sideloader re-signs |
+
+That last row is the reason: SideStore could not re-sign the 3.5 GiB archive,
+and what it reported named a Mach-O slice because that is where its walk over
+the tree stopped. An uninstallable app is not a feature, so the payload is
+trimmed by `build/ci/trim-qemu-sysroot.sh`, which asserts that the engine and
+every framework its load commands name survive the trim, and `build.yml`
+refuses to publish an IPA that fails `tools/inspect-ipa.py`.
 
 See docs/PAYLOADS.md for the pipeline itself.
 
@@ -124,11 +165,12 @@ descriptor names:
 
 | Path in the archive | What it is |
 |---|---|
-| `lib/libqemu-aarch64-softmmu.dylib` | the engine the launcher dlopens |
+| `Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu` | the engine the launcher dlopens, `@rpath`-named |
+| `Frameworks/*.framework` | 54 more bundles: the 11 dependencies the engine names, and theirs, closing over every `@rpath` name in the tree |
 | `share/qemu/edk2-aarch64-code.fd` | the read-only UEFI firmware |
 | `share/qemu/edk2-arm-vars.fd` | the writable EFI variables image |
 | `share/qemu/` | QEMU's data directory, which `-L` points at |
-| `Frameworks/*` | the dependency frameworks, install names rewritten by UTM's `fixup.sh` |
+| `loader/` | the Vulkan loader `virglrenderer` looks for |
 
 The launcher uses the **pflash pair**, not `-bios`: `-drive
 if=pflash,readonly=on,file=edk2-aarch64-code.fd` plus a per-machine writable copy
