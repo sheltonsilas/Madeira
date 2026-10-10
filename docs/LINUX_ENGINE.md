@@ -63,49 +63,65 @@ that renames them fails loudly instead of silently doing nothing. They run after
 same trade UTM SE makes - no GPU, runs on a stock device - is the one being
 taken.
 
+## How it reaches the app
+
+Three things have to be true, and `LinuxEngineSupport` asks for them
+separately: `hasQEMUCore` (the engine is in the bundle), `hasTCGInterpreter` (it
+was built with `--enable-tcg-interpreter`) and `hasLauncher` (the app knows how
+to start a machine with it). A fourth, runtime question - does this machine have
+anything to boot from - is `LinuxBootCheck`, asked last, because a missing image
+is not the interesting problem when there is no engine at all.
+
+The engine is not linked. It is **embedded and dlopened**:
+
+1. `linux-engine.yml` publishes `sysroot-iOS-TCI-arm64` as the release asset
+   `qemu-ios-tci-arm64.tar.gz` (tag `payloads`). A release asset rather than the
+   artifact, because the artifact expires after fourteen days and an app build
+   in another repository cannot read it at all.
+2. `build.yml` fetches it with `build/ci/fetch-payload.sh` into
+   `app/Madeira/qemu-ios/`, which is a **folder reference** in the target, so
+   the sysroot ships verbatim in the bundle.
+3. The same step exports `MADEIRA_ENGINE_FLAGS`, and
+   `SWIFT_ACTIVE_COMPILATION_CONDITIONS` forwards it, so `MADEIRA_HAS_QEMU`,
+   `MADEIRA_HAS_QEMU_TCGI` and `MADEIRA_HAS_QEMU_LAUNCHER` reach the Swift
+   compiler. Without the payload the variable is empty and the app says the
+   engine is absent - which is true.
+
+`tools/add_engine_embed.py` makes the two project-file edits and checks them
+(`--check`, run by build.yml's verify job).
+
+Why dlopen rather than link: a static link adds a 400 MB archive and every
+dependency framework to the link line, each with its own install names to
+rewrite; `--enable-shared-lib` exports exactly the three entry points a driver
+needs (`qemu_init`, `qemu_main_loop`, `qemu_cleanup`); and a dlopen failure is
+reported where it happens instead of reading as a broken toolchain.
+
+See docs/PAYLOADS.md for the pipeline itself.
+
 ## What is left
 
-### 1. Link it into the app
+### 1. The guest's screen
 
-`MADEIRA_HAS_QEMU` and `MADEIRA_HAS_QEMU_TCGI` are compilation conditions that
-`LinuxEngineSupport` reads. Neither is set, so `hasQEMUCore` is false and a
-machine says so. Setting them without linking the libraries would be a lie of
-exactly the kind this app has already been criticised for, so the order is:
+`QEMULauncher.swift` starts a real machine and reads its serial console back
+over a Unix socket, and Stop is a `quit` on QEMU's own monitor. What it does not
+do is draw the guest: `-display none` is passed deliberately.
 
-1. Publish the sysroot somewhere the app build can reach it. The artifact
-   expires after fourteen days and `actions/download-artifact` does not cross
-   repositories. A **release asset under a fixed tag** in the build host does
-   both: stable URL, no expiry, no token. The engine workflow should create it
-   once and upload the tarball there.
-2. Fetch it in `build.yml` and link `libqemu-aarch64-softmmu.dylib`, then embed
-   it and the `Frameworks/` it depends on, the way `StikJIT.xcframework` is
-   embedded today. This is the project file work, not the hard part.
-3. Set `MADEIRA_HAS_QEMU` for the core and `MADEIRA_HAS_QEMU_TCGI` for the TCI
-   sysroot, in `project.pbxproj`, beside `MADEIRA_VARIANT_FLAG`.
+A graphical machine needs a scanout path. QEMU's shared-memory framebuffer
+backend plus a renderer is what UTM's `QEMURenderServer` does; `virglrenderer` is
+in the sysroot, but the Metal path was removed with kosmickrisp, so GPU
+acceleration is not on the table. This is the same shape of problem the Windows
+side already solved with `MetalHostView`.
 
-### 2. Write the launcher
+### 2. UEFI firmware in the payload
 
-Linking QEMU does not start a machine. Something has to take an environment
-record - image, RAM, vCPUs, display - and turn it into QEMU's argument vector,
-give the guest somewhere to draw and somewhere to type, and stop it again. That
-is `MADEIRA_HAS_QEMU_LAUNCHER`, a third condition rather than a second, because
-"the emulator is missing" and "nothing here knows how to start the emulator" are
-different problems with different fixes.
+An arm64 cloud image - every entry in `LinuxDistroCatalog` except the desktop
+ISO - boots its own kernel from the ESP, so it needs UEFI firmware. The launcher
+looks for it in four places under `qemu-ios/` and reports all four by name when
+it finds none. Whether UTM's sysroot carries it is checked by the payload job's
+log; if it does not, the firmware is one more file for that archive.
 
-A first useful milestone, in order of decreasing simplicity:
-
-1. A command-line machine: `-M virt -cpu max -m <ram> -smp <vcpus>`, UEFI
-   firmware (`edk2-aarch64`), the downloaded cloud image as a drive, and the
-   serial console redirected to a pipe that the app renders as text. This is the
-   smallest thing that boots the images `LinuxDistroCatalog` already lists and
-   verifies checksums for.
-2. A graphical machine, which needs a display backend. QEMU's own
-   `-display` with a shared-memory framebuffer is what UTM's `QEMURenderServer`
-   does; `virglrenderer` is already in the sysroot, but the Metal path was
-   removed with kosmickrisp, so GPU acceleration is not on the table yet.
-
-Firmware is the part worth naming early: an arm64 cloud image does not boot
-without UEFI, and the firmware is a build input like any other.
+`-kernel`/`-initrd` direct boot is not implemented because no catalogue image
+ships a separable kernel. A user-supplied kernel would be the next addition.
 
 ### 3. Keep the cost in view
 

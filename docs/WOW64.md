@@ -233,6 +233,17 @@ keeps its default of 1.
 
 ## 9. Building
 
+> **In CI:** the farm is built and published by `.github/workflows/payloads.yml`
+> and downloaded into `app/Madeira/i386-windows/` by `build.yml`. The steps below
+> are what that workflow runs, and what to do by hand when it fails. See
+> docs/PAYLOADS.md for the pipeline, its exit-status contract, and what
+> `build-info.txt` records about whether a given IPA has the farm at all.
+>
+> The aarch64 half needs no pipeline: `wow64.dll`, `wow64win.dll`, `ntdll.dll`
+> and FEX's `xtajit.dll` are tracked in `app/Madeira/aarch64-windows/`. The i386
+> farm is the half that is generated, and `app/Madeira/i386-windows/` is tracked
+> empty (`.gitkeep`) so the project builds before the first payload run.
+
 The i386 and aarch64 WoW64 binaries are built from the pinned submodules;
 none are committed with the code.
 
