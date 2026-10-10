@@ -51,6 +51,13 @@ import SwiftUI
 
 // MARK: - What a machine needs before anything is started
 
+/// An aarch64 UEFI firmware: the read-only code image, and the writable
+/// variables image when the sysroot ships one.
+struct LinuxFirmware {
+    let code: URL
+    let vars: URL?
+}
+
 /// The files a QEMU machine needs, checked before QEMU is called rather than
 /// after it fails. Defined unconditionally so LinuxEnginePlan and the machine
 /// screen can ask it a question without knowing whether a launcher was compiled
@@ -67,26 +74,66 @@ enum LinuxBootCheck {
         sysroot?.appendingPathComponent("lib/libqemu-aarch64-softmmu.dylib")
     }
 
-    /// Where an aarch64 UEFI firmware might be. UTM's own sysroot keeps QEMU's
-    /// `share/qemu` tree, so the first candidate is the upstream name; the others
-    /// are the plain names it has been shipped under. A cloud image - which is
-    /// what every image in LinuxDistroCatalog is, except the desktop ISO - has no
-    /// separable kernel to boot with `-kernel`, so a firmware is not optional
-    /// for those.
-    static let firmwareCandidates = [
+    /// Where an aarch64 UEFI firmware might be.
+    ///
+    /// UTM's sysroot keeps QEMU's own `share/qemu` tree, and the first names here
+    /// are the ones QEMU's firmware descriptor for the `virt` machine - the
+    /// embedded copy of `share/qemu/firmware/60-edk2-aarch64.json` - points at. A
+    /// cloud image, which is every entry in LinuxDistroCatalog except the desktop
+    /// ISO, has no separable kernel to boot with `-kernel`, so a firmware is not
+    /// optional for those.
+    static let firmwareCodeCandidates = [
         "share/qemu/edk2-aarch64-code.fd",
         "share/qemu/QEMU_EFI.fd",
         "edk2-aarch64-code.fd",
         "QEMU_EFI.fd",
     ]
 
-    static var firmwareURL: URL? {
+    /// The writable half of the pair. QEMU packages `virt`'s aarch64 (and 32-bit
+    /// arm) variables image as `edk2-arm-vars.fd`, not `edk2-aarch64-vars.fd` -
+    /// that is what 60-edk2-aarch64.json names, and the second spelling is here
+    /// only in case that is ever corrected upstream.
+    static let firmwareVarsCandidates = [
+        "share/qemu/edk2-arm-vars.fd",
+        "share/qemu/edk2-aarch64-vars.fd",
+    ]
+
+    /// The firmware for this bundle, or nil when there is none.
+    ///
+    /// `vars` is optional on purpose: CODE alone is a bootable firmware and the
+    /// launcher falls back to `-bios` for it. The pair is what makes EFI
+    /// variables persist per machine, so it is used whenever it is available.
+    static func firmware() -> LinuxFirmware? {
         guard let sysroot else { return nil }
-        for name in firmwareCandidates {
-            let url = sysroot.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: url.path) { return url }
+        func find(_ names: [String]) -> URL? {
+            for name in names {
+                let url = sysroot.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { return url }
+            }
+            return nil
         }
-        return nil
+        guard let code = find(firmwareCodeCandidates) else { return nil }
+        return LinuxFirmware(code: code, vars: find(firmwareVarsCandidates))
+    }
+
+    /// A machine's own writable EFI variables file, copied out of the bundle on
+    /// first use.
+    ///
+    /// Copied rather than used in place: the bundle's copy is read-only and
+    /// shared by every machine, and a firmware that cannot write its variables
+    /// cannot remember a boot entry. One copy per machine folder, so a machine's
+    /// boot order is its own.
+    static func writableVars(_ firmware: LinuxFirmware, in folder: URL) -> URL? {
+        guard let source = firmware.vars else { return nil }
+        let target = folder.appendingPathComponent("efi-vars.fd")
+        if FileManager.default.fileExists(atPath: target.path) { return target }
+        do { try FileManager.default.copyItem(at: source, to: target); return target }
+        catch {
+            // Not fatal: the launcher falls back to `-bios` with the CODE image,
+            // which boots without persisting variables. A failure here is not a
+            // reason to refuse to start a machine.
+            return nil
+        }
     }
 
     /// Why this environment cannot boot yet, or nil when it can.
@@ -113,9 +160,9 @@ enum LinuxBootCheck {
                 + "Download one first: QEMU boots the image, and there is nothing to boot without it."
         }
 
-        guard firmwareURL != nil else {
+        guard firmware() != nil else {
             return "This machine's image needs a UEFI firmware to boot, and the app bundle has none. "
-                + "Looked for: " + firmwareCandidates.joined(separator: ", ")
+                + "Looked for: " + firmwareCodeCandidates.joined(separator: ", ")
                 + " under \(sysroot.lastPathComponent)/."
         }
 
@@ -221,8 +268,21 @@ final class LinuxMachineConsole: ObservableObject {
         let consolePath = folder.appendingPathComponent("console.sock").path
         for path in [monitorPath, consolePath] { try? FileManager.default.removeItem(atPath: path) }
 
+        // The firmware, and a per-machine writable copy of its variables. Both
+        // are resolved here rather than inside arguments() because both touch the
+        // filesystem and both can fail, and arguments() is a pure function of its
+        // inputs on purpose.
+        guard let firmware = LinuxBootCheck.firmware() else {
+            // Unreachable: blocker() above returned nil, which requires one.
+            let why = "No UEFI firmware is embedded, so there is nothing to boot the image with."
+            state = .failed(why)
+            throw LaunchError.engine(why)
+        }
+        let writableVars = LinuxBootCheck.writableVars(firmware, in: folder)
+
         let argv = LinuxMachineConsole.arguments(
             environment: environment, engine: engine, sysroot: sysroot,
+            firmware: firmware, writableVars: writableVars,
             monitorPath: monitorPath, consolePath: consolePath)
 
         console = ""
@@ -304,7 +364,8 @@ final class LinuxMachineConsole: ObservableObject {
     /// `thread=multi` (multi-threaded TCG, which needs generated code) is not
     /// offered to it.
     nonisolated static func arguments(environment: LinuxEnvironment, engine: LinuxEngineKind,
-                                      sysroot: URL, monitorPath: String, consolePath: String) -> [String] {
+                                      sysroot: URL, firmware: LinuxFirmware, writableVars: URL?,
+                                      monitorPath: String, consolePath: String) -> [String] {
         var a = ["qemu-system-aarch64"]
         a += ["-M", "virt"]
         a += engine == .utm ? ["-accel", "tcg,thread=multi"] : ["-accel", "tcg,thread=single"]
@@ -318,8 +379,21 @@ final class LinuxMachineConsole: ObservableObject {
 
         // A cloud image (every catalogue entry but the desktop ISO) boots its own
         // kernel from the ESP, which is what the firmware provides.
-        if let firmware = LinuxBootCheck.firmwareURL {
-            a += ["-bios", firmware.path]
+        //
+        // CODE read-only, VARS writable, both through pflash. pflash is not
+        // decoration: it is where EFI variables live, and without a writable
+        // image the firmware cannot remember a boot entry.
+        //
+        // The shipped sysroot has both halves - share/qemu/edk2-aarch64-code.fd
+        // and share/qemu/edk2-arm-vars.fd, the pair QEMU's own
+        // share/qemu/firmware/60-edk2-aarch64.json names - so in practice this is
+        // the pair. `writableVars` is optional because a sysroot without a VARS
+        // image should still boot, and `firmware` itself is not, because
+        // LinuxBootCheck.blocker has already refused a machine that has no
+        // firmware at all: a QEMU that cannot boot is worse than a refusal.
+        a += ["-drive", "if=pflash,format=raw,readonly=on,file=\(firmware.code.path)"]
+        if let writableVars {
+            a += ["-drive", "if=pflash,format=raw,file=\(writableVars.path)"]
         }
 
         // No scanout yet: see this file's header. `-display none` is explicit so

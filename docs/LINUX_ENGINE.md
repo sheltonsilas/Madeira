@@ -112,16 +112,33 @@ in the sysroot, but the Metal path was removed with kosmickrisp, so GPU
 acceleration is not on the table. This is the same shape of problem the Windows
 side already solved with `MetalHostView`.
 
-### 2. UEFI firmware in the payload
+### 2. UEFI firmware: present, and verified
 
 An arm64 cloud image - every entry in `LinuxDistroCatalog` except the desktop
-ISO - boots its own kernel from the ESP, so it needs UEFI firmware. The launcher
-looks for it in four places under `qemu-ios/` and reports all four by name when
-it finds none. Whether UTM's sysroot carries it is checked by the payload job's
-log; if it does not, the firmware is one more file for that archive.
+ISO - boots its own kernel from the ESP, so it needs UEFI firmware.
+
+It is there. The published payload (`payloads` release,
+`qemu-ios-tci-arm64.tar.gz`, 398,119,937 bytes) was read back entry by entry, and
+it carries the pair QEMU's own `share/qemu/firmware/60-edk2-aarch64.json`
+descriptor names:
+
+| Path in the archive | What it is |
+|---|---|
+| `lib/libqemu-aarch64-softmmu.dylib` | the engine the launcher dlopens |
+| `share/qemu/edk2-aarch64-code.fd` | the read-only UEFI firmware |
+| `share/qemu/edk2-arm-vars.fd` | the writable EFI variables image |
+| `share/qemu/` | QEMU's data directory, which `-L` points at |
+| `Frameworks/*` | the dependency frameworks, install names rewritten by UTM's `fixup.sh` |
+
+The launcher uses the **pflash pair**, not `-bios`: `-drive
+if=pflash,readonly=on,file=edk2-aarch64-code.fd` plus a per-machine writable copy
+of `edk2-arm-vars.fd` in the machine's own folder. Both forms boot; only the pair
+lets the firmware remember a boot entry, and a copy per machine keeps one
+machine's boot order out of another's.
 
 `-kernel`/`-initrd` direct boot is not implemented because no catalogue image
-ships a separable kernel. A user-supplied kernel would be the next addition.
+ships a separable kernel. A user-supplied kernel would be the next addition, and
+`LinuxBootCheck` is where it would be checked.
 
 ### 3. Keep the cost in view
 
