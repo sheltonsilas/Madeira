@@ -13,7 +13,7 @@
 // HOW QEMU IS LOADED, AND WHY NOT LINKED
 // The sysroot app/Madeira/qemu-ios is embedded as a folder reference and dropped
 // into the app bundle verbatim, and this file dlopens
-// libqemu-aarch64-softmmu.dylib out of it. Not a link:
+// qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu out of it. Not a link:
 //
 //   * A static link would add a 400 MB archive to the link line, and every one
 //     of the dependency frameworks would have to be embedded and signed
@@ -23,6 +23,24 @@
 //     Those are the supported seam, and UTM's own launcher uses the same one.
 //   * dlopen fails at a place where it can be reported. A link failure is a
 //     build error that reads like a broken toolchain.
+//
+// WHY THE FRAMEWORK, AND NOT lib/libqemu-aarch64-softmmu.dylib
+// The sysroot ships the same libraries twice, and only one copy can load. The
+// copies under lib/ name themselves and their dependencies with the absolute
+// path of the machine that built them -
+// `/Users/runner/work/.../utm/sysroot-iOS-TCI-arm64/lib/libglib-2.0.0.dylib` -
+// which resolves on no device. The copies under Frameworks/ name the same
+// libraries `@rpath/glib-2.0.0.framework/glib-2.0.0`, which is a name dyld can
+// actually satisfy, and each one carries the Info.plist that makes it a bundle
+// iOS will load. So the framework is the engine, lib/ is the build tree, and
+// build/ci/trim-qemu-sysroot.sh deletes the build tree before the payload is
+// packaged: it was 1.3 GB of a 3 GB payload that could never have been opened.
+//
+// `@rpath` needs a search path, and the sysroot's frameworks have no LC_RPATH of
+// their own, so the app target carries `@executable_path/qemu-ios/Frameworks`
+// alongside the usual `@executable_path/Frameworks`. tools/add_engine_embed.py
+// adds it and the build checks for it; without it the engine loads and then
+// fails to find glib, which is a much worse error than a missing file.
 //
 // WHY THE PUBLIC CLASS IS NOT BEHIND THE FLAG
 // `LinuxMachineConsole` is compiled in every build; only the engine work inside
@@ -69,9 +87,48 @@ enum LinuxBootCheck {
         Bundle.main.resourceURL?.appendingPathComponent("qemu-ios", isDirectory: true)
     }
 
-    /// The softmmu dylib the launcher dlopens.
+    /// Where the engine might be, in the order it is looked for.
+    ///
+    /// The framework comes first because it is the only copy that can load: the
+    /// library under lib/ names its dependencies with the absolute path of the
+    /// build machine. The lib/ spelling is kept as a second candidate so an
+    /// untrimmed payload - one published before build/ci/trim-qemu-sysroot.sh
+    /// existed - is still found, and reported by where it was found.
+    static let engineRelativePaths = [
+        "Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu",
+        "lib/libqemu-aarch64-softmmu.dylib",
+    ]
+
+    /// The softmmu engine the launcher dlopens, or nil when the payload has none.
     static var engineURL: URL? {
-        sysroot?.appendingPathComponent("lib/libqemu-aarch64-softmmu.dylib")
+        guard let sysroot else { return nil }
+        for path in engineRelativePaths {
+            let url = sysroot.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// The frameworks the engine names in its own load commands, and which
+    /// therefore have to be beside it.
+    ///
+    /// Checked by name rather than by looking for a directory, because a payload
+    /// trimmed past its dependencies has an engine that opens and then fails to
+    /// find glib - a failure inside dyld, with no file to point at.
+    static let engineDependencyFrameworks = [
+        "glib-2.0.0", "gobject-2.0.0", "gio-2.0.0", "gmodule-2.0.0",
+        "pixman-1.0", "jpeg.62", "epoxy.0", "zstd.1", "slirp.0",
+        "spice-server.1", "virglrenderer.1",
+    ]
+
+    /// The first dependency the bundle is missing, for a message that names it.
+    static func missingEngineDependency() -> String? {
+        guard let sysroot else { return nil }
+        for name in engineDependencyFrameworks {
+            let url = sysroot.appendingPathComponent("Frameworks/\(name).framework/\(name)")
+            if !FileManager.default.fileExists(atPath: url.path) { return name }
+        }
+        return nil
     }
 
     /// Where an aarch64 UEFI firmware might be.
@@ -144,9 +201,15 @@ enum LinuxBootCheck {
     /// places.
     static func blocker(for environment: LinuxEnvironment) -> String? {
         guard let sysroot else { return nil }
-        guard FileManager.default.fileExists(atPath: engineURL?.path ?? "") else {
-            return "The engine folder is here, but \(sysroot.lastPathComponent)/lib/"
-                + "libqemu-aarch64-softmmu.dylib is not in it. The QEMU payload is incomplete."
+        guard let engineURL else {
+            return "The engine folder is here, but it holds no aarch64 engine: "
+                + "\(sysroot.lastPathComponent)/Frameworks/qemu-aarch64-softmmu.framework "
+                + "is not in it. The QEMU payload is incomplete."
+        }
+        if let missing = missingEngineDependency() {
+            return "The engine is at \(engineURL.lastPathComponent), but the framework it needs "
+                + "is not beside it: Frameworks/\(missing).framework. The QEMU payload was "
+                + "trimmed past a dependency, so the engine would open and then fail to load."
         }
 
         // The image. `imagePath` is absolute and set when a download finishes.

@@ -255,15 +255,38 @@ jobs:
         # twenty-five minutes into an app build.
         run: python3 tools/add_engine_embed.py --check
 
+      - name: The payload trimmer is valid shell, and the IPA gate behaves
+        # Two things that decide what the published IPA contains, checked before
+        # a build spends twenty-five minutes producing one.
+        #
+        # build/ci/trim-qemu-sysroot.sh deletes most of the QEMU payload, and a
+        # script that deletes the engine's own dependencies builds a green app
+        # that cannot start a machine. Its assertion list is real code and gets
+        # a syntax check here; the build itself runs it against the payload,
+        # where the assertions are what matter.
+        #
+        # tools/inspect-ipa.py is the gate that a package has to pass to be
+        # published, so a hole in it is an uninstallable app shipped green. Its
+        # self test writes small archives of each shape that must be rejected -
+        # no arm64 slice, a symlink out of the bundle, two apps, one too large
+        # to re-sign - and checks the verdict on each. No network needed.
+        run: |
+          set -euo pipefail
+          bash -n build/ci/trim-qemu-sysroot.sh
+          echo "trim script: syntax ok"
+          python3 tools/self_test_inspect_ipa.py
+
       - name: The payload fetcher is valid shell, and fails loudly when it must
         # fetch-payload.sh decides whether an app build ships a 32-bit Windows
         # farm and a QEMU engine, and its exit-status contract is the whole
-        # design: 0 fetched, 10 not published yet (warn and continue), 1
-        # genuinely broken (stop). A typo that turned 10 into a crash would make
-        # every app build red until the payloads workflow first succeeds, and a
-        # typo that turned 1 into 10 would ship a half-extracted farm. Checked by
-        # running it against a repository that has no such release, which is the
-        # only branch that needs no network and no credentials.
+        # design: 0 fetched, 10 not published yet, 1 genuinely broken. Both 10
+        # and 1 stop the app build (see the payload step for why a missing farm
+        # is no longer survivable), but they stop it with different messages: 10
+        # names the payloads workflow to run, 1 says the asset is there and
+        # unusable. A typo that collapsed the two would send someone looking for
+        # the wrong problem. Checked by running it against a repository that has
+        # no such release, which is the only branch that needs no network and no
+        # credentials.
         run: |
           set -euo pipefail
           bash -n build/ci/fetch-payload.sh
@@ -276,10 +299,12 @@ jobs:
           set -e
           cat /tmp/fetch.log
           if [ "$status" != 10 ]; then
-            echo "::error::a missing payload returned $status; it must return 10 so an app build can continue"
+            echo "::error::a missing payload returned $status; it must return 10 (not published), not a failure"
             exit 1
           fi
-          echo "a missing payload is reported as 10, as designed"
+          grep -q "::warning::i386-windows.tar.gz is not published" /tmp/fetch.log \
+            || { echo "::error::the not-published message did not name the asset"; exit 1; }
+          echo "a missing payload is reported as 10 and names the asset, as designed"
 
   build:
     name: ${{ matrix.variant }}
@@ -404,24 +429,35 @@ jobs:
           # the whole of docs/WOW64.md's reason to exist. This is the half that
           # is not tracked in git; the aarch64 half (wow64.dll, wow64win.dll,
           # xtajit.dll) already is.
-          set +e
+          #
+          # A MISSING FARM IS AN ERROR AND NOT A WARNING. It used to be exit 10
+          # ("not published yet, continue"), and that shipped an IPA whose whole
+          # point -- running 32-bit installers like Chrome's or Claude's setup --
+          # was silently absent: the app installed, opened, and then hung the
+          # moment a 32-bit program was started. A green build with a dead
+          # feature is worse than a red build, so the build stops here and names
+          # the workflow that produces the missing piece.
           bash build/ci/fetch-payload.sh i386-windows.tar.gz app/Madeira/i386-windows
           farm=$?
-          set -e
           case "$farm" in
             0) echo "i386_farm=yes" >> "$GITHUB_ENV" ;;
-            10) echo "::warning::no 32-bit Windows farm: 32-bit programs will not be able to start"
-                echo "i386_farm=no" >> "$GITHUB_ENV" ;;
+            10) echo "::error::i386-windows.tar.gz is not published in the payloads release."
+                echo "::error::32-bit Windows programs cannot start without it. Run the"
+                echo "::error::payloads workflow (Actions -> payloads -> what=i386-farm)"
+                echo "::error::first, then re-run this build."
+                exit 1 ;;
             *) echo "::error::the 32-bit farm payload could not be fetched"; exit 1 ;;
           esac
 
-          # The JIT-less QEMU sysroot. Entities the launcher dlopens at run time
-          # out of the bundle, so nothing is statically linked and the app does
-          # not grow a 400 MB archive.
-          set +e
+          # The QEMU sysroot. Entities the launcher dlopens at run time out of
+          # the bundle, so nothing is statically linked and the app does not grow
+          # a 400 MB archive.
+          #
+          # Required for the same reason the farm is: a machine that reports the
+          # engine missing is a Linux capability that does not exist, and a
+          # warning here is how that shipped unnoticed. The build stops instead.
           bash build/ci/fetch-payload.sh qemu-ios-tci-arm64.tar.gz app/Madeira/qemu-ios
           qemu=$?
-          set -e
           case "$qemu" in
             0) echo "qemu=yes" >> "$GITHUB_ENV"
                # The engine flags become Swift compilation conditions through
@@ -430,11 +466,33 @@ jobs:
                # is present when the payload that backs it is, or the app would
                # claim a machine can start and then fail at dlopen.
                echo "engine_flags=MADEIRA_HAS_QEMU MADEIRA_HAS_QEMU_TCGI MADEIRA_HAS_QEMU_LAUNCHER" >> "$GITHUB_ENV" ;;
-            10) echo "::warning::no QEMU sysroot: Linux machines will report the engine as missing"
-               echo "qemu=no" >> "$GITHUB_ENV"
-               echo "engine_flags=" >> "$GITHUB_ENV" ;;
+            10) echo "::error::qemu-ios-tci-arm64.tar.gz is not published in the payloads release."
+               echo "::error::Linux machines cannot start without it. Run the linux-engine"
+               echo "::error::workflow (Actions -> linux-engine -> targets=interpreter-only),"
+               echo "::error::which builds QEMU and publishes this asset, then re-run this build."
+               exit 1 ;;
             *) echo "::error::the QEMU sysroot payload could not be fetched"; exit 1 ;;
           esac
+
+      - name: Trim the QEMU sysroot to what a Linux guest loads
+        # The payload is a whole build tree: 3 GB in 12,442 files, of which the
+        # launcher opens one framework. Shipped whole, the IPA unpacked to
+        # 3.5 GiB and could not be signed by a sideloader at all - build-8's
+        # failure - and 2.6 GB of what it carried could never have been loaded
+        # by anything: five other simulation targets with two copies each, a
+        # macOS pkg-config, 97 command line tools, 1,093 headers and 10,700 files
+        # of documentation. See build/ci/trim-qemu-sysroot.sh for the list and
+        # for why the framework copy is the loadable one.
+        #
+        # Run here as well as at publish time so a payload published before the
+        # trim existed still ships correctly, and so a mistake in the payload is
+        # caught by this build rather than by a device.
+        #
+        # Unconditional, deliberately. Gating it on the fetch's outcome would
+        # make the one failure that matters - the trim not running - look exactly
+        # like a build that did not need it, which is how a 3.5 GiB app shipped
+        # green. If the payload is not there the script says so and the job stops.
+        run: bash build/ci/trim-qemu-sysroot.sh app/Madeira/qemu-ios
 
       - name: Build LLVM 15 for iOS (gated, about an hour, cached)
         # Restored from the llvm-ios-* cache when a previous run built it, in
@@ -639,6 +697,19 @@ jobs:
           zip -qry "dist/Madeira-${{ matrix.variant }}-unsigned.ipa" Payload
           rm -rf Payload
           ls -la dist
+
+      - name: The IPA is one a sideloader can install
+        # Packaging succeeds for an archive nobody can install, and that is not
+        # hypothetical: build-8 unpacked to 3.5 GiB in 14,136 entries because the
+        # QEMU payload was a whole build tree, SideStore could not re-sign it,
+        # and the app was published anyway. What failed there is a property of
+        # the archive, so the archive is what gets checked - its integrity, its
+        # layout, the architecture of its executable, symlinks that leave the
+        # bundle, and the size a re-signing walk has to face. See
+        # tools/inspect-ipa.py.
+        run: |
+          set -euo pipefail
+          python3 tools/inspect-ipa.py "dist/Madeira-${{ matrix.variant }}-unsigned.ipa"
 
       - name: Record what was actually built
         run: |

@@ -303,11 +303,19 @@ jobs:
           tag=payloads
           d=utm/sysroot-iOS-TCI-arm64
           test -d "$d" || { echo "::error::$d was not produced"; exit 1; }
-          # The dylib the launcher dlopens. Asserted by name because a sysroot
-          # with frameworks but no softmmu dylib would still tar and still
-          # publish, and the app would then link nothing and show no engine.
-          test -f "$d/lib/libqemu-aarch64-softmmu.dylib" \
-            || { echo "::error::$d/lib/libqemu-aarch64-softmmu.dylib is missing"; exit 1; }
+          # The engine the launcher dlopens, in the form that can actually load:
+          # UTM's framework packaging names the engine and its dependencies
+          # `@rpath/...`, where the copies under lib/ name the absolute path of
+          # this runner. Asserted by name because a sysroot with frameworks but
+          # no aarch64 engine would still tar and still publish, and the app
+          # would then show no engine at all.
+          test -f "$d/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu" \
+            || { echo "::error::$d/Frameworks/qemu-aarch64-softmmu.framework is missing"; exit 1; }
+          # Trim before packaging, so what is published is what a guest loads
+          # instead of the build tree it was assembled in. The script asserts the
+          # engine and its dependencies survive, and the app build runs it again
+          # on what it downloads.
+          bash build/ci/trim-qemu-sysroot.sh "$d"
           # Files at the archive's top level: fetch-payload.sh extracts straight
           # into the destination directory. `-h` would replace the
           # Frameworks/*.framework/Versions symlinks with copies and multiply the

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Wire the QEMU engine into Madeira.xcodeproj: an embed, and a flag forward.
+"""Wire the QEMU engine into Madeira.xcodeproj: an embed, a flag forward, an rpath.
 
-Two edits, both required before a Linux guest can start, and both of the kind
+Three edits, all required before a Linux guest can start, and all of the kind
 that is easy to get subtly wrong by hand.
 
 1. `app/Madeira/qemu-ios` as a folder reference in Resources.
@@ -31,12 +31,25 @@ that is easy to get subtly wrong by hand.
    The accepting setting is empty by default, so a build that fetches no payload
    produces a binary that honestly reports the engine as absent.
 
+3. `@executable_path/qemu-ios/Frameworks` in LD_RUNPATH_SEARCH_PATHS.
+
+   The engine and every one of its dependencies is named `@rpath/...` by UTM's
+   own packaging, and NOTHING in the payload carries an LC_RPATH to resolve it:
+   the frameworks in the sysroot have no rpaths of their own. `@rpath` is
+   resolved against the search paths of the main executable (and of the images
+   loaded before it), so the app target has to name the directory. Without this
+   edit the engine loads and then dyld cannot find glib, which surfaces as a
+   launch failure with no missing file to name.
+
+   Added to every configuration of the app target - both Debug and Release -
+   because the two must not disagree about where the engine's libraries are.
+
 Idempotent: a second run changes nothing and says so. Every anchor is asserted
 before it is edited -- a silent no-op here costs a full CI cycle to notice, and
 the app then claims a machine can start and fails at dlopen instead.
 
 Usage:  python3 tools/add_engine_embed.py [--check]
-        --check  change nothing; exit 1 if either edit is missing.
+        --check  change nothing; exit 1 if any edit is missing.
 Exits 0 on success, 1 on failure, and prints exactly what it changed.
 """
 
@@ -59,6 +72,10 @@ FOLDER = "qemu-ios"
 # The setting that accepting definition expands to. Empty in a checkout, set by
 # build.yml when the payload is present.
 FLAGS_SETTING = "MADEIRA_ENGINE_FLAGS"
+
+# Where the engine's frameworks are, as dyld has to find them: inside the app
+# bundle, in the sysroot folder the folder reference copies.
+ENGINE_RPATH = "@executable_path/qemu-ios/Frameworks"
 
 TAB = "\t"
 
@@ -157,6 +174,38 @@ def apply_flags_forward(text: str) -> tuple[str, list[str]]:
     return text, changed
 
 
+def apply_engine_rpath(text: str) -> tuple[str, list[str]]:
+    """Add the sysroot's framework directory to the app's search paths."""
+    changed: list[str] = []
+    if ENGINE_RPATH in text:
+        return text, changed
+
+    old = (
+        f"{TAB}{TAB}{TAB}{TAB}LD_RUNPATH_SEARCH_PATHS = (\n"
+        f'{TAB}{TAB}{TAB}{TAB}{TAB}"$(inherited)",\n'
+        f'{TAB}{TAB}{TAB}{TAB}{TAB}"@executable_path/Frameworks",\n'
+        f"{TAB}{TAB}{TAB}{TAB});\n"
+    )
+    new = (
+        f"{TAB}{TAB}{TAB}{TAB}LD_RUNPATH_SEARCH_PATHS = (\n"
+        f'{TAB}{TAB}{TAB}{TAB}{TAB}"$(inherited)",\n'
+        f'{TAB}{TAB}{TAB}{TAB}{TAB}"@executable_path/Frameworks",\n'
+        f'{TAB}{TAB}{TAB}{TAB}{TAB}"{ENGINE_RPATH}",\n'
+        f"{TAB}{TAB}{TAB}{TAB});\n"
+    )
+
+    # The extension's own configurations use `@executable_path/../../Frameworks`,
+    # so this anchor matches the app target's two configurations and nothing else.
+    n = text.count(old)
+    assert n > 0, (
+        "no build configuration has the app's runpath search path; the engine's "
+        "frameworks have nowhere to be resolved from"
+    )
+    text = text.replace(old, new)
+    changed.append(f"{n} configuration(s): +{ENGINE_RPATH}")
+    return text, changed
+
+
 def main() -> int:
     check_only = "--check" in sys.argv[1:]
 
@@ -169,16 +218,22 @@ def main() -> int:
             problems.append(f"app/Madeira/{FOLDER} is not a folder reference in the target")
         if f"$({FLAGS_SETTING})" not in text:
             problems.append(f"$({FLAGS_SETTING}) is not forwarded into SWIFT_ACTIVE_COMPILATION_CONDITIONS")
+        if ENGINE_RPATH not in text:
+            problems.append(f"{ENGINE_RPATH} is not in the app's LD_RUNPATH_SEARCH_PATHS")
         for p in problems:
             print("missing: " + p)
         return 1 if problems else 0
 
     text, folder_changes = apply_folder_reference(text)
     text, flag_changes = apply_flags_forward(text)
+    text, rpath_changes = apply_engine_rpath(text)
 
-    changes = folder_changes + flag_changes
+    changes = folder_changes + flag_changes + rpath_changes
     if text == original:
-        print(f"nothing to do: {FOLDER} is already embedded and $({FLAGS_SETTING}) is already forwarded")
+        print(
+            f"nothing to do: {FOLDER} is already embedded, $({FLAGS_SETTING}) is already "
+            f"forwarded, and {ENGINE_RPATH} is already a search path"
+        )
         return 0
 
     write_project(text, newline)
