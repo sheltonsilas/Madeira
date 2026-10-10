@@ -211,10 +211,45 @@ def mirror_linux_engine(text):
     return text
 
 
+def mirror_payloads(text):
+    """payloads.yml -> build host payloads.yml.
+
+    Two changes, the same two every mirrored workflow needs: a `source_ref`
+    input, and the checkout pinned to the source repository. Its `on:` already
+    has an `inputs:` block of its own (the `what` choice), so source_ref joins it
+    rather than replacing it.
+
+    It is mirrored because its whole purpose is to hand the app build a release
+    asset, and the app build runs on the build host. Its own checkout needs the
+    submodules and the full history, exactly like build.yml's, which is why it
+    arrives in the CHECKOUT_BUILD form.
+    """
+    assert "on:\n  workflow_dispatch:\n    inputs:\n" in text, (
+        "payloads.yml: the `on:` block moved; re-read it"
+    )
+    text = text.replace(
+        "on:\n  workflow_dispatch:\n    inputs:\n",
+        "on:\n  workflow_dispatch:\n    inputs:\n" + source_input(),
+        1,
+    )
+
+    assert text.count(CHECKOUT_BUILD) == 1, (
+        "payloads.yml: expected the build-form checkout, found "
+        f"{text.count(CHECKOUT_BUILD)}"
+    )
+    text = text.replace(
+        CHECKOUT_BUILD,
+        pin("          ", "          ", "          submodules: recursive\n          fetch-depth: 0\n"),
+        1,
+    )
+    return text
+
+
 MIRRORS = {
     "build.yml": mirror_build,
     "heavy.yml": mirror_heavy,
     "linux-engine.yml": mirror_linux_engine,
+    "payloads.yml": mirror_payloads,
     "swift-typecheck.yml": mirror_typecheck,
 }
 

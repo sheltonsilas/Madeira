@@ -206,12 +206,18 @@ struct MadeiraMachineView: View {
     @State private var debuggerAttached = isDebuggerAttached()
     @State private var confirmDelete = false
     @State private var notice: String?
+    @State private var showConsole = false
 
     /// The engine this machine will actually start under, and what stops it.
+    ///
+    /// The boot check is asked here and not inside LinuxEnginePlan, because only
+    /// this screen has the environment. It is the last question the plan asks, so
+    /// a machine with no engine still hears about the engine.
     private var plan: LinuxEnginePlan {
         LinuxEnginePlan.resolve(
             environmentRequiresJIT: environment.requiresJIT,
-            jitIsOn: debuggerAttached
+            jitIsOn: debuggerAttached,
+            bootBlocker: LinuxBootCheck.blocker(for: environment)
         )
     }
 
@@ -270,6 +276,7 @@ struct MadeiraMachineView: View {
         .navigationTitle(environment.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { debuggerAttached = isDebuggerAttached() }
+        .sheet(isPresented: $showConsole) { QEMUConsoleView() }
         .confirmationDialog(
             "Delete \(environment.name)?",
             isPresented: $confirmDelete,
@@ -289,6 +296,25 @@ struct MadeiraMachineView: View {
 
     // MARK: Start
 
+    /// Start the machine, or put the real reason it could not start in front of
+    /// the user.
+    ///
+    /// The pre-flight has already run in `plan`, so reaching the launcher means
+    /// every precondition was met. A failure here is therefore not a missing
+    /// piece - it is the engine refusing to load or refusing its arguments, and
+    /// it is reported verbatim because that is the only thing that will help.
+    private func startMachine() {
+        // LinuxMachineConsole exists in every build, so this call site carries no
+        // conditional: a build without the engine gets the same call and the
+        // error that says so, rather than a different screen.
+        do {
+            try LinuxMachineConsole.shared.start(environment: environment, engine: plan.kind)
+            showConsole = true
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
     /// The Start button, and the truth about it.
     ///
     /// Enabled by `plan.canStart` and nothing else. `plan.blocker` is written by
@@ -298,9 +324,7 @@ struct MadeiraMachineView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Button {
-                    // Intentionally empty while the engine is absent: the button
-                    // is disabled for the same reason, so this body is unreachable
-                    // rather than a lie.
+                    startMachine()
                 } label: {
                     Label("Start", systemImage: "play.fill")
                         .font(MadeiraTheme.heading())

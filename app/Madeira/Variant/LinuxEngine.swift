@@ -172,7 +172,16 @@ struct LinuxEnginePlan: Equatable {
     ///
     /// A missing QEMU core is the only hard blocker, because no amount of
     /// choosing can run a guest without an emulator.
-    static func resolve(environmentRequiresJIT: Bool, jitIsOn: Bool) -> LinuxEnginePlan {
+    ///
+    /// `bootBlocker` is the fourth question, and it is asked LAST on purpose:
+    /// what a machine boots from (its image, its firmware) only matters once
+    /// there is an engine and a launcher to boot it with. Passing a boot problem
+    /// while the engine is absent would send the reader to the wrong file - the
+    /// same mistake this whole file exists to undo. Its caller is
+    /// MadeiraMachineView, which has the environment; callers that only have an
+    /// engine choice (the distro onboarding screen) leave it nil.
+    static func resolve(environmentRequiresJIT: Bool, jitIsOn: Bool,
+                        bootBlocker: String? = nil) -> LinuxEnginePlan {
         let kind: LinuxEngineKind
         var jitWouldHelp = false
 
@@ -218,6 +227,12 @@ struct LinuxEnginePlan: Equatable {
                     + "only run with a debugger attached. Enable JIT, or link a QEMU built with "
                     + "--enable-tcg-interpreter.",
                 jitWouldHelp: true)
+        }
+
+        // The engine, the launcher and the accelerator are all in place. What is
+        // left is whether this particular machine has anything to boot from.
+        if let bootBlocker {
+            return LinuxEnginePlan(kind: kind, blocker: bootBlocker, jitWouldHelp: jitWouldHelp)
         }
 
         return LinuxEnginePlan(kind: kind, blocker: nil, jitWouldHelp: jitWouldHelp)

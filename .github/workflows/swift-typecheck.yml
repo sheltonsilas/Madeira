@@ -80,14 +80,35 @@ jobs:
           # -F is the bundled StikJIT framework, the app's only non-system import.
           # -I app/Madeira resolves the bridging header's own siblings
           # (Winios/Winios.h, SwiftSteam/lzma_shim.h).
+          #
+          # TWO PASSES, because a `#if`-guarded half of the app is invisible to a
+          # single one. The engine flags are set by build.yml only when the QEMU
+          # payload has been fetched, so the default pass type-checks the app as a
+          # build with no engine - and QEMULauncher's whole launcher, its dlopen,
+          # its sockets and its argument vector, would never be compiled by
+          # anything until a full payload build. A payload build is the most
+          # expensive run there is; this pass exists so the code is checked by the
+          # cheap one.
+          #
+          # The flag set is written out rather than hidden behind a variable: it
+          # has to match the `engine_flags` build.yml exports, and a mismatch here
+          # would silently check the wrong half.
           # shellcheck disable=SC2046  # the paths contain no spaces
-          xcrun swiftc -typecheck \
-            -swift-version 5 \
-            -sdk "$SDK" \
-            -target arm64-apple-ios17.0 \
-            -import-objc-header app/Madeira/Madeira-Bridging-Header.h \
-            -F app/Frameworks/StikJIT.xcframework/ios-arm64 \
-            -I app/Madeira \
-            $(cat /tmp/sources.txt)
+          check() {
+            echo "type-check ($1):"
+            xcrun swiftc -typecheck \
+              -swift-version 5 \
+              -sdk "$SDK" \
+              -target arm64-apple-ios17.0 \
+              -import-objc-header app/Madeira/Madeira-Bridging-Header.h \
+              -F app/Frameworks/StikJIT.xcframework/ios-arm64 \
+              -I app/Madeira \
+              $2 \
+              $(cat /tmp/sources.txt)
+          }
 
-          echo "type-check clean: $count files"
+          check "engine absent" ""
+          check "engine present" \
+            "-D MADEIRA_HAS_QEMU -D MADEIRA_HAS_QEMU_TCGI -D MADEIRA_HAS_QEMU_LAUNCHER"
+
+          echo "type-check clean: $count files, both engine configurations"

@@ -1342,19 +1342,6 @@ struct ContentView: View {
                     }
                 }
             }
-            // Let a downloaded installer start a program the same way a library
-            // entry does. The bridge deliberately does not own the session:
-            // ContentView does, via wine_process_start.
-            .onAppear {
-                WindowsInstallerBridge.shared.launchHandler = { relative in
-                    var entry = LibraryEntry(
-                        title: (relative as NSString).lastPathComponent,
-                        relativePath: relative,
-                        bits: 64)
-                    entry.arguments = ""
-                    launchLibraryEntry(entry)
-                }
-            }
             .sheet(isPresented: $showVariantScreen) {
                 VStack(spacing: 0) {
                     // The switch itself. Both variants are in this one binary,
@@ -1457,6 +1444,43 @@ struct ContentView: View {
         DeviceLoadDiagnostics.start()
         // Madeira Dock: an unconsumed sign-in transfer from an earlier run goes.
         if wine_process_is_running() == 0 { MadeiraDock.cleanup() }
+
+        /* Let a downloaded installer start a program the same way a library
+         * entry does. This used to be attached to the classic body's
+         * .onAppear only, so in the new shell a download that finished and was
+         * tapped to Install did nothing at all: launchHandler stayed nil and
+         * WindowsInstallerBridge.run() had no one to call. Binding it here
+         * covers every front screen, present and future, because both call
+         * startup().
+         *
+         * The bridge deliberately does not own the session: ContentView does,
+         * via wine_process_start. */
+        WindowsInstallerBridge.shared.launchHandler = { relative in
+            var entry = LibraryEntry(
+                title: (relative as NSString).lastPathComponent,
+                // 32 or 64 from the file's own PE header, never assumed. A
+                // 32-bit setup program launched as "64-bit" would show the
+                // wrong badge and, worse, hide the one thing the user needs to
+                // know when it does not run. 0 when the header cannot be read,
+                // which is what an unknown bitness is.
+                relativePath: relative,
+                bits: Self.installedBits(relative))
+            entry.arguments = ""
+            launchLibraryEntry(entry)
+        }
+    }
+
+    /// The bitness of a staged file, read from its PE header (0x14c: 32-bit
+    /// x86, 0x8664: x64). 0 when unreadable. DockInstallers.machine is the one
+    /// PE reader in the app; this only resolves the drive_c-relative path and
+    /// turns the machine into the 32/64 the library speaks.
+    private static func installedBits(_ relativePath: String) -> Int {
+        let url = LibraryModel.drive.appendingPathComponent(relativePath)
+        switch DockInstallers.machine(url) {
+        case 0x14c: return 32
+        case 0x8664: return 64
+        default: return 0
+        }
     }
 
     /// A library session: the game full screen in either orientation, with the

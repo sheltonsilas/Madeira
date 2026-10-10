@@ -100,7 +100,11 @@ on:
         default: "both"
 
 permissions:
-  contents: read
+  # write, not read: this job also publishes the JIT-less sysroot as a payload
+  # asset so the app build can link it (build/ci/fetch-payload.sh). The artifact
+  # upload above cannot be used for that - an app build in another repository
+  # cannot read it.
+  contents: write
 
 jobs:
   build-engine:
@@ -284,3 +288,36 @@ jobs:
           path: utm/sysroot-*
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Publish the JIT-less sysroot as a payload
+        # `success()`, unlike the artifact upload above. The artifact is worth
+        # keeping from a failed run so the failure can be inspected; a PAYLOAD is
+        # not, because build.yml would download it and ship it. A half-built
+        # sysroot links and then crashes inside the guest.
+        if: ${{ success() && inputs.targets != 'jit-only' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag=payloads
+          d=utm/sysroot-iOS-TCI-arm64
+          test -d "$d" || { echo "::error::$d was not produced"; exit 1; }
+          # The dylib the launcher dlopens. Asserted by name because a sysroot
+          # with frameworks but no softmmu dylib would still tar and still
+          # publish, and the app would then link nothing and show no engine.
+          test -f "$d/lib/libqemu-aarch64-softmmu.dylib" \
+            || { echo "::error::$d/lib/libqemu-aarch64-softmmu.dylib is missing"; exit 1; }
+          # Files at the archive's top level: fetch-payload.sh extracts straight
+          # into the destination directory. `-h` would replace the
+          # Frameworks/*.framework/Versions symlinks with copies and multiply the
+          # payload; the links are preserved dwarvishly, as upstream packed them.
+          tar -czf qemu-ios-tci-arm64.tar.gz -C "$d" .
+          ls -l qemu-ios-tci-arm64.tar.gz
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Prebuilt payloads" \
+              --notes "Rolling release. Assets are replaced in place; they are built from pinned submodule revisions, so an asset's content changes only when those pins do."
+          fi
+          gh release upload "$tag" qemu-ios-tci-arm64.tar.gz --clobber
+          echo "payload: ${{ github.server_url }}/${{ github.repository }}/releases/download/$tag/qemu-ios-tci-arm64.tar.gz"
