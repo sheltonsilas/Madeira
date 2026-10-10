@@ -52,12 +52,16 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: "Which payloads to build and publish"
+        # One option, because this workflow builds one thing. The QEMU sysroot is
+        # the other payload and it is published by linux-engine.yml, which is the
+        # workflow that already builds it; an input here for it would either have
+        # to trigger that workflow or do nothing when chosen, and an option that
+        # silently does nothing is worse than no option. This used to offer
+        # `qemu-sysroot` and `both`, and nothing consumed either.
+        description: "Which payload to build and publish (see docs/PAYLOADS.md)"
         type: choice
         options:
           - i386-farm
-          - qemu-sysroot
-          - both
         default: "i386-farm"
 
 permissions:
@@ -67,7 +71,7 @@ permissions:
 jobs:
   i386-farm:
     name: 32-bit Windows farm (i386-windows)
-    if: ${{ inputs.what != 'qemu-sysroot' }}
+    if: ${{ inputs.what == 'i386-farm' }}
     runs-on: macos-15
     timeout-minutes: 350
     steps:
