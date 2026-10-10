@@ -318,7 +318,7 @@ final class LinuxMachineConsole: ObservableObject {
 
         // A cloud image (every catalogue entry but the desktop ISO) boots its own
         // kernel from the ESP, which is what the firmware provides.
-        if let firmware = LinuxBootCheck.firmwareURL() {
+        if let firmware = LinuxBootCheck.firmwareURL {
             a += ["-bios", firmware.path]
         }
 
@@ -423,7 +423,12 @@ struct QEMUConsoleView: View {
 /// exports exactly these, and the spellings are asserted rather than assumed: a
 /// dylib that loads but is missing one of them is reported by name instead of
 /// crashing at the first call site.
-enum QEMUEntryPoints {
+///
+/// A struct, not an enum: it holds the resolved pointers. An enum cannot carry
+/// stored properties, which the type-check pass reported as four lines of
+/// "enums must not contain stored properties" on a type that otherwise looked
+/// like the usual namespace-only enum.
+struct QEMUEntryPoints {
     typealias Init = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Void
     typealias MainLoop = @convention(c) () -> Void
     typealias Cleanup = @convention(c) () -> Void
@@ -546,8 +551,13 @@ enum UnixSocket {
             }
         }
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        // Darwin.connect, qualified: this function is itself called `connect`, so
+        // the unqualified name resolves to the static method being defined and
+        // not to the C function - which is a type error the compiler reports as
+        // "use of 'connect' refers to instance method rather than global
+        // function", pointing at a line that looks obviously correct.
         let result = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, len) }
         }
         if result != 0 { close(fd); return -1 }
         return fd
