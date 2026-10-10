@@ -1468,6 +1468,14 @@ struct ContentView: View {
             entry.arguments = ""
             launchLibraryEntry(entry)
         }
+
+        /* An installer iOS opened WITH Madeira may have arrived before this ran:
+         * an app launched by the open has not drawn a screen yet, and this is
+         * where the handler above is bound. The file waits in IncomingInstaller
+         * until now, and this is the call that releases it. Without it the app
+         * comes to the front and does nothing, which is indistinguishable from a
+         * crash from the user's side. */
+        IncomingInstaller.shared.drain()
     }
 
     /// The bitness of a staged file, read from its PE header (0x14c: 32-bit

@@ -53,26 +53,34 @@ final class WindowsInstallerBridge: ObservableObject {
     /// overwrite, so downloading `setup.exe` twice does not destroy the first.
     @discardableResult
     func stage(_ download: BrowserDownload) throws -> String {
+        try stage(fileAt: download.localURL, filename: download.filename)
+    }
+
+    /// The same thing for a file the app was handed rather than downloaded:
+    /// anything iOS opened with Madeira. See `IncomingInstaller`.
+    @discardableResult
+    func stage(fileAt source: URL, filename: String? = nil) throws -> String {
         let fm = FileManager.default
         try fm.createDirectory(at: Self.stagedDownloads, withIntermediateDirectories: true)
 
-        var target = Self.stagedDownloads.appendingPathComponent(download.filename)
+        let name = filename ?? source.lastPathComponent
+        var target = Self.stagedDownloads.appendingPathComponent(name)
         if fm.fileExists(atPath: target.path) {
             // String has no deletingPathExtension/pathExtension -- those are
             // NSString's. pathExtension(of:) above is the helper this file
             // already uses for exactly this, so use it.
-            let ext = Self.pathExtension(of: download.filename)
+            let ext = Self.pathExtension(of: name)
             let stem = ext.isEmpty
-                ? download.filename
-                : String(download.filename.dropLast(ext.count + 1))
+                ? name
+                : String(name.dropLast(ext.count + 1))
             var n = 2
             repeat {
-                let name = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
-                target = Self.stagedDownloads.appendingPathComponent(name)
+                let candidate = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
+                target = Self.stagedDownloads.appendingPathComponent(candidate)
                 n += 1
             } while fm.fileExists(atPath: target.path)
         }
-        try fm.copyItem(at: download.localURL, to: target)
+        try fm.copyItem(at: source, to: target)
         return "downloads/" + target.lastPathComponent
     }
 
@@ -85,36 +93,10 @@ final class WindowsInstallerBridge: ObservableObject {
     }
 
     /// Called from the browser's Install button. Stages, then runs.
-    ///
-    /// `silent` appends the usual quiet switches for the two installer types we
-    /// can recognise. We do NOT guess for everything: an unknown installer is
-    /// run bare so the user sees its own UI, which is the least surprising
-    /// behaviour and the only one that is safe.
     func offer(_ download: BrowserDownload, source: DownloadStore) {
         guard download.finished, download.isInstaller else { return }
         do {
-            let staged = try stage(download)
-            switch Self.pathExtension(of: download.filename) {
-            case "msi":
-                // Only use msiexec when it is actually installed. The arm64ec
-                // farm shipped without it until build/wine-pe/build-universal.sh,
-                // and launching a program that does not exist silently does
-                // nothing at all - which looks exactly like a hung install.
-                if Self.moduleExists("windows/system32/msiexec.exe") {
-                    run(relativePath: "windows/system32/msiexec.exe",
-                        arguments: ["/i", "C:\\(staged.windowsPath)", "/quiet", "/norestart"])
-                } else {
-                    // Run the package itself and let Wine's association or the
-                    // program's own UI handle it.
-                    run(relativePath: staged)
-                }
-            case "msix", "msixbundle", "appx":
-                // App packages are installed by the shell, not msiexec. A bare
-                // launch under Wine is the shell path.
-                run(relativePath: staged)
-            default:
-                run(relativePath: staged)
-            }
+            try runInstaller(stagedPath: try stage(download), filename: download.filename)
         } catch {
             source.add(BrowserDownload(filename: download.filename,
                                        sourceURL: download.sourceURL,
@@ -122,6 +104,49 @@ final class WindowsInstallerBridge: ObservableObject {
                                        byteCount: download.byteCount,
                                        finished: false,
                                        failure: "Could not stage into the prefix: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Stage and run a file the app was handed by iOS: a download opened from
+    /// Files, a share sheet target, "Open in Madeira".
+    ///
+    /// The staged path is returned so the caller can say which file it started.
+    /// Throws rather than reporting, because there is no download row to put a
+    /// message in: the caller is `IncomingInstaller`, which has its own answer.
+    @discardableResult
+    func offer(fileAt url: URL) throws -> String {
+        let staged = try stage(fileAt: url)
+        try runInstaller(stagedPath: staged, filename: url.lastPathComponent)
+        return staged
+    }
+
+    /// The launch itself, once the file is inside the prefix.
+    ///
+    /// A quiet switch for the one installer type that has a documented one, and
+    /// nothing for the rest. We do NOT guess: an unknown installer is run bare
+    /// so the user sees its own UI, which is the least surprising behaviour and
+    /// the only one that is safe.
+    private func runInstaller(stagedPath staged: String, filename: String) throws {
+        switch Self.pathExtension(of: filename) {
+        case "msi":
+            // Only use msiexec when it is actually installed. The arm64ec farm
+            // shipped without it until build/wine-pe/build-universal.sh, and
+            // launching a program that does not exist silently does nothing at
+            // all - which looks exactly like a hung install.
+            if Self.moduleExists("windows/system32/msiexec.exe") {
+                run(relativePath: "windows/system32/msiexec.exe",
+                    arguments: ["/i", "C:\\(staged.windowsPath)", "/quiet", "/norestart"])
+            } else {
+                // Run the package itself and let Wine's association or the
+                // program's own UI handle it.
+                run(relativePath: staged)
+            }
+        case "msix", "msixbundle", "appx":
+            // App packages are installed by the shell, not msiexec. A bare
+            // launch under Wine is the shell path.
+            run(relativePath: staged)
+        default:
+            run(relativePath: staged)
         }
     }
 
@@ -150,6 +175,95 @@ final class WindowsInstallerBridge: ObservableObject {
     static func moduleExists(_ relativePath: String) -> Bool {
         FileManager.default.fileExists(
             atPath: LibraryModel.drive.appendingPathComponent(relativePath).path)
+    }
+}
+
+// MARK: - A file opened with Madeira
+
+/// An installer iOS handed to the app instead of one the browser downloaded.
+///
+/// WHY THIS EXISTS
+/// There are two ways to get an .exe in front of the user and only one of them
+/// worked. The browser's download shelf is the one that worked. The other is
+/// every other way iOS can give an app a file - tapping a download in the Files
+/// app, "Share > Madeira", Safari's Downloads list - and it did not work at all,
+/// for two reasons that both had to be fixed:
+///
+///   * Info.plist declared no document types, so iOS did not know Madeira could
+///     open an .exe and never offered it. That is the half in Info.plist.
+///   * The app's one URL handler routed every URL to the JIT network shortcut,
+///     so a file URL that did arrive went nowhere. That is this class.
+///
+/// It also has to remember the file: an app launched BY the open has not run
+/// `ContentView.startup()` yet, and that is where the launch handler is bound,
+/// so there is a window in which the app knows about the file and cannot run it.
+/// `drain()` is called again from `startup()` for exactly that reason.
+///
+/// Deliberately not an ObservableObject: nothing draws from it. What it has is a
+/// log file, because an installer that does not start leaves no other trace on a
+/// device, and "nothing happened" and "it ran and failed quietly" are otherwise
+/// the same report.
+@MainActor
+final class IncomingInstaller {
+    static let shared = IncomingInstaller()
+
+    /// A public read-only answer to "did it work", for a caller that wants to
+    /// report it. Nil when nothing has been opened yet.
+    private(set) var problem: String?
+    private(set) var started: String?
+
+    private var pending: URL?
+
+    /// The app's URL handler. `madeira://` is the JIT shortcut's and is handled
+    /// before this is reached; this takes file URLs, and ignores anything else
+    /// rather than guessing what it is.
+    func handle(_ url: URL) {
+        guard url.isFileURL else { return }
+        pending = url
+        drain()
+    }
+
+    /// Start the pending file, if there is one and the app can start anything.
+    ///
+    /// A no-op while `launchHandler` is nil: the file stays pending and startup()
+    /// calls this again. Dropping it here instead would be a silent loss, which
+    /// is the bug this whole type is the fix for.
+    func drain() {
+        guard let url = pending, WindowsInstallerBridge.shared.launchHandler != nil else { return }
+        pending = nil
+        // A file from another app's container or from iCloud needs an explicit
+        // security scope; a file in Madeira's own Documents does not, and the
+        // call is harmless then.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let staged = try WindowsInstallerBridge.shared.offer(fileAt: url)
+            started = url.lastPathComponent
+            problem = nil
+            log("started \(url.lastPathComponent) as C:\\\(staged)")
+        } catch {
+            started = nil
+            problem = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            log(problem ?? "unknown failure")
+        }
+    }
+
+    /// Kept because an installer that does not start leaves no trace anywhere
+    /// else on a device, and the log is the only way to tell "nothing happened"
+    /// apart from "it ran and failed quietly".
+    private func log(_ message: String) {
+        guard let data = ("[Installer] " + message + "\n").data(using: .utf8) else { return }
+        // Documents, not the prefix: this has to be readable from the Files app
+        // when the install does not start, and drive_c is Wine's.
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let url = documents.appendingPathComponent("incoming-installer.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
     }
 }
 
