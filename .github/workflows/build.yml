@@ -275,6 +275,12 @@ jobs:
           bash -n build/ci/trim-qemu-sysroot.sh
           echo "trim script: syntax ok"
           python3 tools/self_test_inspect_ipa.py
+          # tools/check_ipa_macho.py is the other half of the same gate: it reads
+          # the load commands and the embedded signatures inside the IPA, where
+          # tools/inspect-ipa.py reads the archive around them. Its self test
+          # holds the two readings of @executable_path - the app's process and an
+          # extension's own - and the shapes of signature that must be refused.
+          python3 tools/self_test_check_ipa_macho.py
 
       - name: The payload fetcher is valid shell, and fails loudly when it must
         # fetch-payload.sh decides whether an app build ships a 32-bit Windows
@@ -924,6 +930,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/inspect-ipa.py "dist/Madeira-${{ matrix.variant }}-unsigned.ipa"
+
+      - name: Every Mach-O the app loads is signed, and resolves
+        # The other half of "can this install", and the half a zipper cannot see.
+        # dyld does not report a load failure for an unsigned or mismatched
+        # Mach-O - it terminates the process - so "the engine is in Frameworks/"
+        # is not the claim to gate on. "Every framework there is signed, the
+        # signature matches the bytes it covers, the Info.plist beside it, and
+        # its requirements, and every @rpath it names resolves to a file in this
+        # archive" is. See tools/check_ipa_macho.py.
+        run: |
+          set -euo pipefail
+          python3 tools/check_ipa_macho.py "dist/Madeira-${{ matrix.variant }}-unsigned.ipa"
 
       - name: Record what was actually built
         run: |

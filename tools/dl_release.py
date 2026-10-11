@@ -99,7 +99,6 @@ def main() -> int:
                 print(f"error: {args.tag} has no asset {args.name}; it has "
                       + ", ".join(a["name"] for a in release["assets"]), file=sys.stderr)
                 return 2
-            body = api(args.host, "", accept="application/octet-stream")
             request = urllib.request.Request(
                 assets[0]["url"],
                 headers={

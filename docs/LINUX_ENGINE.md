@@ -330,6 +330,20 @@ the same two protocols on real sockets, so a mistake in the harness is found in
 seconds on any machine - no runner, no QEMU. It carries the earlier mistake as a
 fixture: an `.iso` behind a disk front end, which must be refused.
 
+Whether the **artifact** can load the engine is a third question, and it is
+inside the Mach-O files rather than in the archive. `tools/check_ipa_macho.py`
+reads them: every framework under `Frameworks/` must carry a signature whose
+page hashes match the bytes they cover, whose special slot 1 is the
+`Info.plist` beside it and whose slot 2 is its requirements blob; every
+`@rpath` a Mach-O names must resolve to a file that is actually in the bundle,
+under both of the documented readings of `@executable_path` (the app's process,
+and an extension's own); and every slice must be arm64 and platform iOS. dyld
+does not report a failed load for any of this - it terminates the process -
+which is why the claim is verified here and not by watching the app start.
+`tools/self_test_check_ipa_macho.py` holds the two resolutions and the shapes of
+signature that must be refused, and `build.yml` runs both checks on the IPA
+before it is allowed to be an artifact.
+
 `build.yml`'s `linux-boot-smoke` job does this on every build, twice: a machine
 whose disk holds nothing, which boots the firmware and reaches its boot manager,
 and an installer ISO (Alpine's virtual flavour, pinned by version and hash),
@@ -340,10 +354,13 @@ starts and dies cannot pass as a boot. Whether the loader's own output reaches
 the serial console is recorded and not required: that is a property of the
 distribution, not of this command line.
 
-What this does **not** prove is the other half: that the iOS build of QEMU
-boots it on an iPhone. That part is answered on the device, by
-`Documents/linux-engine.log`, which the launcher writes to because a message on
-the screen of an app that has just exited is no message at all.
+What this does **not** prove is the last half: that the iOS build of QEMU boots
+it on an iPhone, and that a guest's screen is drawn there. The first part is
+answered on the device, by `Documents/linux-engine.log`, which the launcher
+writes to because a message on the screen of an app that has just exited is no
+message at all. The second is not implemented: `-display none` is how this app
+draws nothing, and a guest's framebuffer needs a scanout reader that does not
+exist yet.
 
 ## Licensing
 
