@@ -316,12 +316,29 @@ be answered on a runner:
   output on the console socket; then `quit` on the monitor socket, which is the
   Stop button's own mechanism, and an exit status of 0.
 
+What the *drives* are is asked over QMP, on a channel the harness adds for
+itself, and not on the app's own monitor. The monitor is a line editor: it
+echoes what is typed into it, with the redraw sequences a terminal would
+interpret, and the `(qemu)` that ends an answer also appears inside the echo of
+the next question. A reader looking for an answer there found the question
+instead, and failed a run that had booted. `removable`, `inserted.file` and
+`stats.rd_bytes` are fields of a documented structure; that is what the checks
+above are made of.
+
+`tools/self_test_boot_smoke.py` runs that whole flow against a fake QEMU, over
+the same two protocols on real sockets, so a mistake in the harness is found in
+seconds on any machine - no runner, no QEMU. It carries the earlier mistake as a
+fixture: an `.iso` behind a disk front end, which must be refused.
+
 `build.yml`'s `linux-boot-smoke` job does this on every build, twice: a machine
 whose disk holds nothing, which boots the firmware and reaches its boot manager,
 and an installer ISO (Alpine's virtual flavour, pinned by version and hash),
-which must be reported as removable media by QEMU, must produce a boot option in
-the firmware, and must be read from - the last as `rd_bytes` on the disc, so a
-bootloader that starts and dies cannot pass as a boot.
+which must be reported as removable media by QEMU, must hold that image as its
+inserted medium, must not leave the firmware saying there is no bootable option,
+and must be read from - the last as `rd_bytes` on the disc, so a bootloader that
+starts and dies cannot pass as a boot. Whether the loader's own output reaches
+the serial console is recorded and not required: that is a property of the
+distribution, not of this command line.
 
 What this does **not** prove is the other half: that the iOS build of QEMU
 boots it on an iPhone. That part is answered on the device, by

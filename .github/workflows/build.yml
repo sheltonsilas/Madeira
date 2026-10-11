@@ -344,15 +344,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-utils
           qemu-system-aarch64 --version
 
-      - name: The command line itself, and the checker's own test
-        # The self test mutates the real source into the mistakes that produce a
+      - name: The command line itself, and both checkers' own tests
+        # The self tests mutate the real source into the mistakes that produce a
         # machine that does not boot - a virtio disk holding an .iso, an
         # accelerator the build cannot have, a socket that waits for a reader -
-        # and requires each to be refused. A gate that cannot fail is a comment.
+        # and require each to be refused. A gate that cannot fail is a comment.
+        #
+        # check_launcher_argv reads the Swift and finds those mistakes there;
+        # self_test_boot_smoke runs the boot harness's own flow against a fake
+        # QEMU, so that a mistake in the harness is found here, in seconds, and
+        # not thirty minutes later in a run that had booted perfectly well.
         run: |
           set -euo pipefail
           python3 tools/check_launcher_argv.py --self-test
           python3 tools/check_launcher_argv.py --no-jit-core --image /tmp/guest.qcow2
+          python3 tools/self_test_boot_smoke.py
 
       - name: Fetch the firmware the app ships
         # Exit 10 is "the payloads release does not exist yet", which is not a
@@ -406,6 +412,15 @@ jobs:
         # option on the disc, and the guest then read at least a hundred
         # kilobytes of it. Console text alone would pass on a bootloader that
         # started and died; reads alone would pass on a firmware that probed it.
+        #
+        # What the device *is* comes from QMP, not from the monitor's
+        # human-readable `info block`: `removable` and `inserted.file` are
+        # fields of a documented structure, and one earlier run was failed by a
+        # reader that mistook the echo of its own question for the answer. The
+        # loader's own output - GRUB, the kernel banner - is reported by
+        # `--note` and not required, because whether a distribution's loader
+        # speaks on a serial console is a property of that distribution and not
+        # of this command line.
         run: |
           set -euo pipefail
           if [ ! -f "$sysroot/share/qemu/edk2-aarch64-code.fd" ]; then
@@ -426,13 +441,25 @@ jobs:
             --emit-json /tmp/argv-iso.json
           python3 tools/boot_smoke.py --argv-json /tmp/argv-iso.json \
             --what "an installer ISO" \
-            --expect "starting Boot" --expect "Linux version" --expect GRUB \
+            --expect BdsDxe \
             --forbid "no bootable option" \
-            --expect-block "Removable media: +Yes" \
-            --note "Linux version" --note "Alpine" \
-            --settle 150 \
-            --expect-stats "rd_bytes=[1-9][0-9]{5,}" \
-            --console-timeout 600
+            --expect-removable \
+            --expect-medium /tmp/installer.iso \
+            --min-read-bytes 100000 \
+            --note GRUB --note "Linux version" --note Alpine \
+            --settle 120 \
+            --console-timeout 600 \
+            --save-console /tmp/iso-console.txt
+
+      - name: What the guest said, if a later step needs it
+        # Always, and in the log rather than an artifact: when a run is being
+        # read afterwards, the console is the first thing anyone asks for.
+        if: always()
+        run: |
+          if [ -f /tmp/iso-console.txt ]; then
+            echo "--- the installer's console, as recorded ---"
+            tail -c 4000 /tmp/iso-console.txt
+          fi
 
   build:
     name: ${{ matrix.variant }}
