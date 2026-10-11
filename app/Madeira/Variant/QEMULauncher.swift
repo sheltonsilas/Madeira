@@ -207,21 +207,62 @@ enum LinuxBootCheck {
         return LinuxFirmware(code: code, vars: find(firmwareVarsCandidates))
     }
 
-    /// A machine's own writable EFI variables file, copied out of the bundle on
+    /// The size a pflash bank has to be, which is the size of the code image.
+    ///
+    /// QEMU's `virt` machine gives the firmware two flash banks of one size,
+    /// and a bank whose backend is shorter than the device is not a warning: the
+    /// machine does not start, and the message is
+    ///
+    ///     qemu-system-aarch64: device requires 67108864 bytes, block backend
+    ///     provides 329216 bytes
+    ///
+    /// which reads as a corrupt payload rather than as a file that needed to be
+    /// extended. 67108864 is the size of `edk2-aarch64-code.fd` and 329216 is
+    /// the whole of `edk2-arm-vars.fd`, and the gap between them is the
+    /// difference between an `nvram-template` - a firmware's *initial* variables,
+    /// which is what QEMU's own `share/qemu/firmware/60-edk2-aarch64.json` calls
+    /// it - and an nvram image, which is a flash bank. The code image is the
+    /// size to follow rather than a constant, because it is the bank that is
+    /// known to fit the device.
+    static func flashSize(for firmware: LinuxFirmware) -> Int {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: firmware.code.path)
+        let code = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        return code > 0 ? code : 64 * 1024 * 1024
+    }
+
+    /// A machine's own writable EFI variables file, written out of the bundle on
     /// first use.
     ///
-    /// Copied rather than used in place: the bundle's copy is read-only and
-    /// shared by every machine, and a firmware that cannot write its variables
-    /// cannot remember a boot entry. One copy per machine folder, so a machine's
-    /// boot order is its own.
+    /// Written rather than copied: the bundle's copy is read-only and shared by
+    /// every machine, a firmware that cannot write its variables cannot remember
+    /// a boot entry, and - see `flashSize` - the template is a fraction of the
+    /// bank it has to fill, so a copy is a machine that never starts. One file
+    /// per machine folder, so a machine's boot order is its own.
+    ///
+    /// An existing file is damaged-checked and not trusted. The machine folder
+    /// outlives the app update, and a build before this one left a 321 KB copy
+    /// behind, so a file that is too short is replaced instead of being returned
+    /// - otherwise the bug outlives its fix on every device that hit it.
     static func writableVars(_ firmware: LinuxFirmware, in folder: URL) -> URL? {
         guard let source = firmware.vars else { return nil }
         let target = folder.appendingPathComponent("efi-vars.fd")
-        if FileManager.default.fileExists(atPath: target.path) { return target }
-        do { try FileManager.default.copyItem(at: source, to: target); return target }
-        catch {
-            // Not fatal: the launcher falls back to `-bios` with the CODE image,
-            // which boots without persisting variables. A failure here is not a
+        let flash = flashSize(for: firmware)
+        if let existing = try? FileManager.default.attributesOfItem(atPath: target.path),
+           let size = (existing[.size] as? NSNumber)?.intValue, size >= flash {
+            return target
+        }
+        do {
+            let template = try Data(contentsOf: source)
+            FileManager.default.createFile(atPath: target.path, contents: template)
+            let handle = try FileHandle(forWritingTo: target)
+            defer { try? handle.close() }
+            // Extends with zeroes to the bank's size; the template's own
+            // variables are the first bytes and survive.
+            try handle.truncate(atOffset: UInt64(flash))
+            return target
+        } catch {
+            // Not fatal: the launcher falls back to the CODE image alone, which
+            // boots without persisting variables. A failure here is not a
             // reason to refuse to start a machine.
             return nil
         }

@@ -376,9 +376,16 @@ jobs:
             exit 0
           fi
           qemu-img create -f qcow2 /tmp/guest.qcow2 64M
-          # The app copies the template into the machine's own folder, because
-          # the firmware writes to it; the payload's copy is left alone.
+          # What the app writes for itself, and what this job would get wrong by
+          # copying the file it finds. The payload's edk2-arm-vars.fd is an
+          # nvram-template - 321 KB of initial variables - and the flash bank the
+          # firmware is given is 64 MiB, the size of the code image, so the
+          # template is copied and then extended. Copied verbatim, QEMU refuses
+          # the backend and the machine does not start, which is the failure this
+          # step exists to keep from coming back. See LinuxBootCheck.writableVars.
           cp "$sysroot/share/qemu/edk2-arm-vars.fd" /tmp/efi-vars.fd
+          truncate -s "$(stat -c %s "$sysroot/share/qemu/edk2-aarch64-code.fd")" /tmp/efi-vars.fd
+          ls -l /tmp/efi-vars.fd
           python3 tools/check_launcher_argv.py --no-jit-core \
             --image /tmp/guest.qcow2 --sysroot "$sysroot" \
             --writable-vars /tmp/efi-vars.fd \
@@ -411,6 +418,7 @@ jobs:
           curl -fsSL -o /tmp/installer.iso "$url"
           echo "dbd0c2eaa0bfa39e18d075dae07760a9055ffdee0a338c8a35059413b0f76fec  /tmp/installer.iso" | sha256sum -c -
           cp "$sysroot/share/qemu/edk2-arm-vars.fd" /tmp/iso-vars.fd
+          truncate -s "$(stat -c %s "$sysroot/share/qemu/edk2-aarch64-code.fd")" /tmp/iso-vars.fd
           python3 tools/check_launcher_argv.py --no-jit-core \
             --image /tmp/installer.iso --sysroot "$sysroot" \
             --writable-vars /tmp/iso-vars.fd --vcpus 2 --ram 1024 \
