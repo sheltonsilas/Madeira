@@ -223,8 +223,8 @@ descriptor names:
 |---|---|
 | `Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu` | the engine the launcher dlopens, `@rpath`-named |
 | `Frameworks/*.framework` | 54 more bundles: the 11 dependencies the engine names, and theirs, closing over every `@rpath` name in the tree |
-| `share/qemu/edk2-aarch64-code.fd` | the read-only UEFI firmware |
-| `share/qemu/edk2-arm-vars.fd` | the writable EFI variables image |
+| `share/qemu/edk2-aarch64-code.fd` | the read-only UEFI firmware, 64 MiB |
+| `share/qemu/edk2-arm-vars.fd` | the **template** for the writable EFI variables, 321 KB |
 | `share/qemu/` | QEMU's data directory, which `-L` points at |
 | `loader/` | the Vulkan loader `virglrenderer` looks for |
 
@@ -233,6 +233,27 @@ if=pflash,readonly=on,file=edk2-aarch64-code.fd` plus a per-machine writable cop
 of `edk2-arm-vars.fd` in the machine's own folder. Both forms boot; only the pair
 lets the firmware remember a boot entry, and a copy per machine keeps one
 machine's boot order out of another's.
+
+**The copy is written, not copied, and this was the crash.** Two flash banks of
+QEMU's `virt` machine are one size, and the pair that ships is 64 MiB of code
+against 321 KB of variables, because `edk2-arm-vars.fd` is an nvram *template* -
+the descriptor above calls it exactly that: the initial contents of a file that
+has to be as large as the bank. Handing QEMU the template itself does not
+produce a firmware without saved variables; it produces
+
+```
+qemu-system-aarch64: device requires 67108864 bytes, block backend provides 329216 bytes
+```
+
+and a process that exits during `qemu_init`, which inside an app that embeds
+QEMU is the app. The report was "Ubuntu crashes immediately", and this was it.
+`LinuxBootCheck.writableVars` now extends the template to the size of the code
+image (the bank that is known to fit), and replaces a short file it finds rather
+than returning it, because the machine folder outlives an app update and every
+device that hit this has one on disk. It was found by
+`linux-boot-smoke` on its first run - see "What can be checked without a
+device" below - after three days of the failure surviving because nothing could
+start the machine.
 
 `-kernel`/`-initrd` direct boot is not implemented because no catalogue image
 ships a separable kernel. A user-supplied kernel would be the next addition, and
