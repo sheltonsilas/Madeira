@@ -238,13 +238,74 @@ machine's boot order out of another's.
 ships a separable kernel. A user-supplied kernel would be the next addition, and
 `LinuxBootCheck` is where it would be checked.
 
-### 3. Keep the cost in view
+### 3. The disc is an optical disc, and only a CD-ROM front end is one
+
+A desktop ISO in `LinuxDistroCatalog` is not a disk image with a filesystem on
+it; it is an ISO9660 volume with an El Torito boot catalogue whose EFI entry the
+firmware runs. Two separate things have to be true in the argument vector, and
+the first is not enough without the second:
+
+* the **backend** is `media=cdrom,readonly=on`, because the image is read-only
+  optical media;
+* the **front end** is a `scsi-cd` on a `virtio-scsi-pci` controller, because
+  `virtio-blk` is a disk device. `media=cdrom` on a virtio-blk drive describes
+  the backend and not what the guest is given: the UEFI driver for it, in EDK2's
+  `OvmfPkg/VirtioBlkDxe`, reports its media as non-removable, and the El Torito
+  catalogue is then found, if at all, by accident of the partition scanner's
+  tolerance for a 512-byte block device. QEMU's own storage guidance says the
+  same thing - virtio-blk has no CD-ROM, virtio-scsi does.
+
+Both device models are in the published payload (`virtio-scsi-pci`, `scsi-cd`,
+and the `virtio-scsi-*` aliases), which was checked rather than assumed: a
+device the engine does not have is a machine that refuses to start.
+
+This is also the check that `tools/check_launcher_argv.py` refuses an .iso for:
+an optical image attached to a disk front end is not a slow boot, it is no boot
+at all.
+
+### 4. Keep the cost in view
 
 One engine build is about **forty-five minutes of macOS runner** and it takes
 the whole dependency tree with it. That is why the engine workflow is
 `workflow_dispatch` only - `build.yml` publishes a release on every push, and a
 multi-hour job there would turn every push red while it iterated. Change one
 thing per run, and read the first error rather than the last.
+
+## What can be checked without a device
+
+The engine is a Mach-O built for iOS (`LC_BUILD_VERSION` platform 2), so no
+simulator and no Mac can load it, and the app cannot be run anywhere but on a
+device. That is a property of the payload and not a choice, and it is how three
+days of "Ubuntu crashes immediately" went without anything anyone could run.
+
+The question splits, though. Whether the **command line** boots a machine is a
+question about QEMU and about the firmware this app ships, and both of those can
+be answered on a runner:
+
+* `tools/check_launcher_argv.py` reads the vector out of
+  `LinuxMachineConsole.arguments`, fills in the values a launch would have
+  resolved (the firmware pair, the console and monitor sockets, `-L`), and
+  refuses it for the mistakes that produce a machine that does
+  not boot: an accelerator the build cannot have, an `.iso` on a disk front end,
+  a chardev that waits for a reader, a firmware pair without its writable half,
+  a missing `-L`. Its `--self-test` mutates the real source into each of those
+  and requires each to be refused, because a gate that cannot fail is a comment.
+* `tools/boot_smoke.py` runs exactly that vector against a host QEMU, with the
+  firmware images from the payload release, and requires the firmware's own
+  output on the console socket; then `quit` on the monitor socket, which is the
+  Stop button's own mechanism, and an exit status of 0.
+
+`build.yml`'s `linux-boot-smoke` job does this on every build, twice: a machine
+whose disk holds nothing, which boots the firmware and reaches its boot manager,
+and an installer ISO (Alpine's virtual flavour, pinned by version and hash),
+which must be reported as removable media by QEMU, must produce a boot option in
+the firmware, and must be read from - the last as `rd_bytes` on the disc, so a
+bootloader that starts and dies cannot pass as a boot.
+
+What this does **not** prove is the other half: that the iOS build of QEMU
+boots it on an iPhone. That part is answered on the device, by
+`Documents/linux-engine.log`, which the launcher writes to because a message on
+the screen of an app that has just exited is no message at all.
 
 ## Licensing
 
