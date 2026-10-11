@@ -65,12 +65,27 @@ taken.
 
 ## How it reaches the app
 
-Three things have to be true, and `LinuxEngineSupport` asks for them
+Four things have to be true, and `LinuxEngineSupport` asks for them
 separately: `hasQEMUCore` (the engine is in the bundle), `hasTCGInterpreter` (it
-was built with `--enable-tcg-interpreter`) and `hasLauncher` (the app knows how
-to start a machine with it). A fourth, runtime question - does this machine have
-anything to boot from - is `LinuxBootCheck`, asked last, because a missing image
-is not the interesting problem when there is no engine at all.
+was built with `--enable-tcg-interpreter`), `hasJITCore` (it was built with
+TCG's JIT) and `hasLauncher` (the app knows how to start a machine with it). A
+fifth, runtime question - does this machine have anything to boot from - is
+`LinuxBootCheck`, asked last, because a missing image is not the interesting
+problem when there is no engine at all.
+
+`hasJITCore` is the one that was missing, and its absence was not cosmetic. The
+published payload is interpreter-only, so it cannot run the JIT configuration at
+all - but `LinuxEnginePlan.resolve` used to choose the engine from what the
+*environment* wanted ("this machine would be faster with JIT") and what the
+debugger was doing, never from what the build had. Any environment with
+`requiresJIT` set - which was the default a new environment was created with -
+plus a debugger therefore started with `-accel tcg,thread=multi` on an engine
+that has no JIT. QEMU's way of refusing an accelerator it does not have is to
+print the reason and call `exit(1)`, and in a process that embeds QEMU that exit
+is the app: press Start and Madeira is gone, with no window, no message and
+nothing in any log. `resolve` now asks the build first, `arguments` asks it again
+before writing the accelerator, and `LinuxMachineConsole.start` refuses a `.utm`
+launch outright in a build with no JIT core.
 
 The engine is not linked. It is **embedded and dlopened**:
 
@@ -116,8 +131,49 @@ dlopens `Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu` and
 `lib/` is deleted before packaging.
 
 Nothing in the payload carries an `LC_RPATH`, so the `@rpath` names have to be
-resolved against a search path the app provides: `@executable_path/qemu-ios/Frameworks`
-in the app target. Without it the engine opens and dyld then cannot find glib.
+resolved against a search path the app provides: `@executable_path/Frameworks`,
+the standard one, plus `@executable_path/qemu-ios/Frameworks` for a build that
+has not been through the packaging step. Without them the engine opens and dyld
+then cannot find glib.
+
+### Where the frameworks end up, and why that is load-bearing
+
+The sysroot ships the frameworks under `qemu-ios/Frameworks/`, and the launcher
+used to look for them there. It does not any more, and the move is the second
+half of the crash fix above.
+
+The frameworks are Mach-O libraries. dyld will not load one whose signature does
+not match, and a file copied into the bundle as a **resource** - which is what a
+folder reference is - is sealed by the bundle signature but is not itself
+signed. This project already knew that in one place: the "Sign bundled dylibs"
+phase ad-hoc signs `d3d12/libmetalirconverter.dylib` and its comment says why.
+Fifty-five more libraries could not be signed there, so `build.yml`'s "Package
+the unsigned IPA" step now, in order:
+
+1. moves `qemu-ios/Frameworks/*.framework` to the bundle's own `Frameworks/`,
+2. ad-hoc signs every framework binary (`codesign --force --sign -`), and
+3. refuses to package anything that is not 1:1 with the frameworks it moved.
+
+`Frameworks/` is the destination for the second reason as well: it is the one
+directory a sideloader has to walk, because it is where Xcode puts embedded
+frameworks, so a re-signing tool signs what it finds there. Under `qemu-ios/`
+the same files are only reached by a tool that walks every nested directory,
+which is a property of the signer and not something this app can promise.
+`LinuxBootCheck` looks in the bundle's `Frameworks/` first and still accepts the
+sysroot, so a local build - which has no packaging step - keeps working, and
+`tools/inspect-ipa.py` accepts either location and reports which one it found.
+
+### When the engine does explain itself
+
+QEMU writes errors to stderr, and in an app that embeds it that output went to
+the device console where nobody reads it. `EngineOutputCapture` now takes over
+stdout and stderr for the life of a machine, streams both into the console
+screen and appends them to `Documents/linux-engine.log` - on the device, in the
+Files app, and still there after an `exit(1)` takes the process with it. The
+argument vector and the exit code are written to the same file, so it reads as
+one story. This is the difference between "the machine crashed" and a bug
+report, and it is the reason a QEMU that refuses is now diagnosable rather than
+fatal to the whole app.
 
 And it ships all seven simulation targets when one is used. Measured on the
 published asset (398,119,937 bytes) and on the IPA built from it:
