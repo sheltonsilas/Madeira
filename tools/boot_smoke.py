@@ -70,6 +70,36 @@ def chardev_path(argv: list[str], device_id: str) -> str | None:
     return None
 
 
+# QEMU's monitor is a line editor, so everything typed into it comes back with
+# the redraw sequences a terminal would interpret: `info version` arrives as
+# `i\x1b[K\x1b[Din\x1b[K...`, and a reader that looks for a prompt finds one in
+# the middle of that echo and returns before the answer it asked for exists.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Za-z0-9]|\x1b[=>]|\r")
+
+
+def plain(text: str) -> str:
+    return ANSI.sub("", text)
+
+
+def read_quiet(sock: socket.socket, budget: float, idle: float = 1.5) -> str:
+    """Read until the socket has been silent for `idle` seconds, or `budget`."""
+    collected: list[str] = []
+    deadline = time.monotonic() + budget
+    last = time.monotonic()
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([sock], [], [], 0.25)
+        if not ready:
+            if time.monotonic() - last >= idle:
+                break
+            continue
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        collected.append(chunk.decode("utf-8", "replace"))
+        last = time.monotonic()
+    return plain("".join(collected))
+
+
 def read_until(sock: socket.socket, deadline: float, needles: list[str],
                sink: list[str], label: str, echo: bool) -> str | None:
     """Read `sock` until one of `needles` appears or the deadline passes."""
@@ -185,23 +215,21 @@ def main() -> int:
     try:
         monitor = connect(monitor_path, deadline)
 
-        # The monitor first: it answers immediately, and what it says about the
-        # drives is a property of the device the vector created.
-        monitor.sendall(b"info version\n")
-        banner: list[str] = []
-        read_until(monitor, time.monotonic() + 10, ["(qemu)"], banner, "monitor", False)
-        version = "".join(banner).strip().splitlines()[:1]
-        print(f"  monitor version: {version[0] if version else '(nothing)'}")
-
         def monitor_says(command_text: str, label: str) -> str:
+            # Drained first, so what comes back is the answer and not the echo
+            # of an earlier question.
+            read_quiet(monitor, 0.5, idle=0.3)
             monitor.sendall(command_text.encode() + b"\n")
-            collected: list[str] = []
-            read_until(monitor, time.monotonic() + 15, ["(qemu)"], collected, label, False)
-            listing = "".join(collected)
+            listing = read_quiet(monitor, 20)
             print(f"  monitor {command_text.strip()}:")
             for line in listing.splitlines():
                 print(f"    | {line}")
             return listing
+
+        # The monitor first: it answers immediately, and what it says about the
+        # drives is a property of the device the vector created.
+        found = re.search(r"\d+\.\d+\.\d+[^\s]*", monitor_says("info version", "version"))
+        print(f"  host qemu: {found.group(0) if found else '(version not reported)'}")
 
         if args.expect_block:
             listing = monitor_says("info block", "block")
