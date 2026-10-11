@@ -693,6 +693,65 @@ jobs:
           app=$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name 'Madeira.app' -path '*Debug-iphoneos*' | head -1)
           test -n "$app" || { echo "::error::no Madeira.app was produced"; exit 1; }
           cp -R "$app" Payload/
+
+          # THE ENGINE GOES TO Frameworks/, AND IT IS SIGNED ON THE WAY
+          #
+          # The QEMU engine and its dependency frameworks arrive as
+          # qemu-ios/Frameworks/*.framework - a folder reference copied into the
+          # bundle verbatim, and therefore unsigned. A file copied in as a
+          # resource is sealed by the bundle signature but is not itself signed,
+          # which this project already knew: its "Sign bundled dylibs" phase
+          # ad-hoc signs the one loose dylib it can reach and says why in a
+          # comment.
+          #
+          # Why this matters enough to move 200 MB: dyld will not load a Mach-O
+          # whose signature does not match, and an unsigned one does not fail the
+          # load politely - the process is terminated. That is a Linux machine
+          # crashing the instant it was started, with no window and no message,
+          # while the Windows path worked, because Wine's DLLs are data files
+          # loaded by the emulator rather than libraries dyld has to trust.
+          #
+          # Frameworks/ is also where a sideloader looks. It has to walk that
+          # directory, because it is where Xcode puts embedded frameworks, so
+          # signing is redone there with the identity the install uses. Under
+          # qemu-ios/ the same files are only reached by a tool that walks every
+          # nested directory there is.
+          #
+          # The ad-hoc signature below is the belt to that braces: `-` is the
+          # identity for a build with no signing identity, every install replaces
+          # these signatures anyway, and it means the frameworks load even if a
+          # sideloader leaves them alone.
+          if [ -d Payload/Madeira.app/qemu-ios/Frameworks ]; then
+            mkdir -p Payload/Madeira.app/Frameworks
+            mv Payload/Madeira.app/qemu-ios/Frameworks/* Payload/Madeira.app/Frameworks/
+            rmdir Payload/Madeira.app/qemu-ios/Frameworks
+          fi
+
+          expected=$(find Payload/Madeira.app/Frameworks -maxdepth 1 -name '*.framework' -type d 2>/dev/null | wc -l | tr -d ' ')
+          signed=0
+          for framework in Payload/Madeira.app/Frameworks/*.framework; do
+            [ -d "$framework" ] || continue
+            binary="$framework/$(basename "$framework" .framework)"
+            if [ ! -f "$binary" ]; then
+              echo "::error::$framework has no binary at $binary; the framework layout is not the one the launcher loads"
+              exit 1
+            fi
+            codesign --force --sign - --timestamp=none "$binary" >/dev/null 2>&1 || {
+              echo "::error::could not ad-hoc sign $binary"
+              exit 1
+            }
+            signed=$((signed + 1))
+          done
+          echo "frameworks: $signed signed ad-hoc in Payload/Madeira.app/Frameworks (expected $expected)"
+          if [ "$signed" != "$expected" ] || [ "$signed" -lt 12 ]; then
+            echo "::error::only $signed of $expected frameworks were signed; the engine and its dependencies are not all there"
+            exit 1
+          fi
+          if [ -d Payload/Madeira.app/qemu-ios/Frameworks ]; then
+            echo "::error::the engine is still under qemu-ios/Frameworks, where a sideloader is not obliged to sign it"
+            exit 1
+          fi
+
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/Madeira.app/Info.plist > dist/bundle-id.txt
           zip -qry "dist/Madeira-${{ matrix.variant }}-unsigned.ipa" Payload
           rm -rf Payload

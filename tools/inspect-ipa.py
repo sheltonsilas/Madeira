@@ -100,16 +100,24 @@ CAPABILITIES = [
         "the tracked arm64ec-windows/ tree",
     ),
     (
-        "the QEMU engine",
-        "qemu-ios/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu",
-        "build/ci/fetch-payload.sh qemu-ios-tci-arm64.tar.gz (linux-engine.yml)",
-    ),
-    (
         "the UEFI firmware a guest boots from",
         "qemu-ios/share/qemu/edk2-aarch64-code.fd",
         "the same payload, kept by build/ci/trim-qemu-sysroot.sh",
     ),
 ]
+
+# Where the engine and its dependencies may be, in the order the launcher looks
+# for them.
+#
+# `Frameworks` first, and that is the point of the packaging step rather than a
+# preference: the frameworks are Mach-O libraries, dyld will not load one whose
+# signature does not match, and an unsigned one - what a folder copied in as a
+# resource is - terminates the process instead of failing the load. Frameworks/
+# is the directory every sideloader walks, because it is where Xcode puts
+# embedded frameworks, so a re-signing tool signs what it finds there. The
+# sysroot's copy is still accepted so an IPA built before the move is not
+# rejected for a reason that is really "this is the old layout".
+ENGINE_LOCATIONS = ("Frameworks", "qemu-ios/Frameworks")
 
 # The frameworks the engine's own load commands name. The trim script checks
 # these on the sysroot; checked again here because the trim runs before the
@@ -254,10 +262,26 @@ def main() -> int:
                 else:
                     print(f"  MISSING {what}")
                     fail(f"{what}: Payload/{app}/{relative} is absent; it comes from {source}")
+            # The engine and its dependencies, wherever the packaging step put
+            # them. Reported with the directory they were found in, because
+            # "the engine is missing" and "the engine is in the old place the
+            # sideloader does not sign" are different problems.
+            engine = f"qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu"
+            found = [loc for loc in ENGINE_LOCATIONS if f"Payload/{app}/{loc}/{engine}" in files]
+            if found:
+                print(f"  ok      the QEMU engine ({found[0]}/)")
+            else:
+                print("  MISSING the QEMU engine")
+                fail(
+                    "Payload/" + app + "/" + engine + " is in neither "
+                    + " nor ".join(ENGINE_LOCATIONS)
+                    + "; it comes from build/ci/fetch-payload.sh qemu-ios-tci-arm64.tar.gz"
+                )
             for dependency in ENGINE_DEPENDENCIES:
-                relative = f"qemu-ios/Frameworks/{dependency}.framework/{dependency}"
-                if f"Payload/{app}/{relative}" not in files:
-                    fail(f"the engine names {dependency} and Payload/{app}/{relative} is absent")
+                relative = f"{dependency}.framework/{dependency}"
+                if not any(f"Payload/{app}/{loc}/{relative}" in files for loc in ENGINE_LOCATIONS):
+                    fail(f"the engine names {dependency} and it is absent from "
+                         + " and ".join(ENGINE_LOCATIONS))
 
         sizes = collections.Counter()
         for info in infos:

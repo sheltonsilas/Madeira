@@ -87,24 +87,44 @@ enum LinuxBootCheck {
         Bundle.main.resourceURL?.appendingPathComponent("qemu-ios", isDirectory: true)
     }
 
-    /// Where the engine might be, in the order it is looked for.
+    /// The engine as the packaged app carries it: in the bundle's own Frameworks
+    /// directory, which is where a sideloader re-signs nested code.
     ///
-    /// The framework comes first because it is the only copy that can load: the
-    /// library under lib/ names its dependencies with the absolute path of the
-    /// build machine. The lib/ spelling is kept as a second candidate so an
-    /// untrimmed payload - one published before build/ci/trim-qemu-sysroot.sh
-    /// existed - is still found, and reported by where it was found.
-    static let engineRelativePaths = [
+    /// WHY THE LOCATION IS PART OF THE FIX
+    /// The engine and its dependency frameworks are Mach-O libraries. dyld will
+    /// not load a Mach-O whose signature does not match, and an unsigned one -
+    /// which is what a folder copied in as a resource is - does not fail the
+    /// load politely: the process is terminated before any of this code can
+    /// report anything. The app already knows this. Its "Sign bundled dylibs"
+    /// phase ad-hoc signs the one loose dylib it copies as a resource, and says
+    /// so in a comment. Fifty-five more dylibs cannot be signed that way from a
+    /// build with signing turned off, so the packaging step moves them into
+    /// Frameworks/, which is the one directory every sideloader has to walk
+    /// because it is where Xcode puts embedded frameworks. See "Package the
+    /// unsigned IPA" in .github/workflows/build.yml.
+    static let bundleEnginePath = "Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu"
+
+    /// Where the engine may be inside the embedded sysroot, for a build that has
+    /// not been through the packaging step: a local Xcode build, or an IPA made
+    /// before the move.
+    ///
+    /// The framework comes before the library because it is the copy that can
+    /// load at all: the library under lib/ names its dependencies with the
+    /// absolute path of the machine that built it.
+    static let sysrootEnginePaths = [
         "Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu",
         "lib/libqemu-aarch64-softmmu.dylib",
     ]
 
     /// The softmmu engine the launcher dlopens, or nil when the payload has none.
     static var engineURL: URL? {
+        let fm = FileManager.default
+        let packaged = Bundle.main.bundleURL.appendingPathComponent(bundleEnginePath)
+        if fm.fileExists(atPath: packaged.path) { return packaged }
         guard let sysroot else { return nil }
-        for path in engineRelativePaths {
+        for path in sysrootEnginePaths {
             let url = sysroot.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: url.path) { return url }
+            if fm.fileExists(atPath: url.path) { return url }
         }
         return nil
     }
@@ -121,12 +141,26 @@ enum LinuxBootCheck {
         "spice-server.1", "virglrenderer.1",
     ]
 
-    /// The first dependency the bundle is missing, for a message that names it.
+    /// The directories the engine's dependencies can be in, in the order they are
+    /// looked for: the bundle's own Frameworks directory, where the packaging
+    /// step puts them, and then the sysroot's, where a local build has them.
+    static var frameworkDirectories: [URL] {
+        var directories = [Bundle.main.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)]
+        if let sysroot {
+            directories.append(sysroot.appendingPathComponent("Frameworks", isDirectory: true))
+        }
+        return directories
+    }
+
+    /// The first dependency the installed app is missing, for a message that
+    /// names it instead of describing dyld's failure to find it.
     static func missingEngineDependency() -> String? {
-        guard let sysroot else { return nil }
+        let fm = FileManager.default
         for name in engineDependencyFrameworks {
-            let url = sysroot.appendingPathComponent("Frameworks/\(name).framework/\(name)")
-            if !FileManager.default.fileExists(atPath: url.path) { return name }
+            let present = frameworkDirectories.contains { directory in
+                fm.fileExists(atPath: directory.appendingPathComponent("\(name).framework/\(name)").path)
+            }
+            if !present { return name }
         }
         return nil
     }
@@ -202,14 +236,17 @@ enum LinuxBootCheck {
     static func blocker(for environment: LinuxEnvironment) -> String? {
         guard let sysroot else { return nil }
         guard let engineURL else {
-            return "The engine folder is here, but it holds no aarch64 engine: "
-                + "\(sysroot.lastPathComponent)/Frameworks/qemu-aarch64-softmmu.framework "
-                + "is not in it. The QEMU payload is incomplete."
+            return "This build carries no aarch64 engine: Frameworks/qemu-aarch64-softmmu.framework "
+                + "is not in the app bundle, and neither is "
+                + "\(sysroot.lastPathComponent)/Frameworks/qemu-aarch64-softmmu.framework. "
+                + "The QEMU payload is incomplete."
         }
         if let missing = missingEngineDependency() {
             return "The engine is at \(engineURL.lastPathComponent), but the framework it needs "
-                + "is not beside it: Frameworks/\(missing).framework. The QEMU payload was "
-                + "trimmed past a dependency, so the engine would open and then fail to load."
+                + "is not beside it: \(missing).framework, looked for in "
+                + frameworkDirectories.map(\.lastPathComponent).joined(separator: " and ")
+                + ". The QEMU payload was trimmed past a dependency, so the engine would open "
+                + "and then fail to load."
         }
 
         // The image. `imagePath` is absolute and set when a download finishes.
@@ -292,6 +329,9 @@ final class LinuxMachineConsole: ObservableObject {
     private var monitor: UnixSocketWriter?
     private var consoleReader: UnixSocketReader?
     private var thread: Thread?
+    /// The engine's stdout and stderr while a machine runs: see
+    /// EngineOutputCapture for why the app takes them over.
+    private var engineOutput: EngineOutputCapture?
     #endif
 
     private init() {}
@@ -311,6 +351,20 @@ final class LinuxMachineConsole: ObservableObject {
         }
         guard let engineURL = LinuxBootCheck.engineURL, let sysroot = LinuxBootCheck.sysroot else {
             throw LaunchError.noEngine
+        }
+
+        // The engine this build has against the engine the plan chose. A
+        // mismatch is what "press Start and the app disappears" was: QEMU is
+        // handed an accelerator it does not have and answers with exit(1) -
+        // inside our process. Refusing here turns a crash into a sentence, and
+        // LinuxEnginePlan.resolve should already have prevented it; this is the
+        // backstop for a caller that chose for itself.
+        if engine == .utm && !LinuxEngineSupport.hasJITCore {
+            let why = "This build's emulator was compiled with TCG's interpreter only, so it cannot "
+                + "run the JIT configuration at all. Choose the interpreter engine (No JIT) and "
+                + "start again."
+            state = .failed(why)
+            throw LaunchError.engine(why)
         }
 
         // Resolve once and keep it: dlopen of the same path is cheap, but doing it
@@ -359,8 +413,22 @@ final class LinuxMachineConsole: ObservableObject {
         }
         consoleReader?.start()
 
+        // The engine's own output belongs to the console from here on. QEMU
+        // reports a problem by printing and exiting, and a print nobody reads is
+        // how a crash stays unexplained. Attached before the thread starts, so
+        // nothing written during init is missed.
+        let capture = EngineOutputCapture(onText: { [weak self] text in
+            Task { @MainActor in self?.append(text) }
+        })
+        capture.attach(header: argv.joined(separator: " "))
+        engineOutput = capture
+
         append("starting \(engine.title.lowercased()) engine\n")
         append("$ " + argv.joined(separator: " ") + "\n\n")
+        if environment.imagePath?.lowercased().hasSuffix(".iso") == true {
+            append("(this machine boots an installer ISO; its screen is not drawn in the app yet, "
+                   + "so watch this console and the guest's own display once it has one)\n")
+        }
 
         let thread = Thread { [weak self] in
             LinuxMachineConsole.run(entry: entry, argv: argv, onExit: { code in
@@ -403,8 +471,10 @@ final class LinuxMachineConsole: ObservableObject {
     private func exited(code: Int32) {
         append("\nengine exited with code \(code)\n")
         #if MADEIRA_HAS_QEMU_LAUNCHER
+        EngineOutputCapture.note("--- engine exited with code \(code) ---")
         consoleReader?.stop(); consoleReader = nil
         monitor = nil
+        engineOutput?.detach(); engineOutput = nil
         #endif
         state = .exited(code: code)
     }
@@ -431,14 +501,33 @@ final class LinuxMachineConsole: ObservableObject {
                                       monitorPath: String, consolePath: String) -> [String] {
         var a = ["qemu-system-aarch64"]
         a += ["-M", "virt"]
-        a += engine == .utm ? ["-accel", "tcg,thread=multi"] : ["-accel", "tcg,thread=single"]
+        // Multi-threaded TCG needs generated code, so it is offered only by an
+        // engine that has TCG's JIT. Asking the interpreter for it is not a slow
+        // boot - QEMU refuses the accelerator and exits the process - which is
+        // why the condition is the build's capability and not the plan's choice.
+        a += engine == .utm && LinuxEngineSupport.hasJITCore
+            ? ["-accel", "tcg,thread=multi"]
+            : ["-accel", "tcg,thread=single"]
         a += ["-cpu", "max"]
         a += ["-smp", String(max(1, environment.vcpus))]
         a += ["-m", String(max(512, environment.ramMiB))]
 
         let image = environment.imagePath ?? ""
-        let format = image.lowercased().hasSuffix(".qcow2") ? "qcow2" : "raw"
-        a += ["-drive", "file=\(image),if=virtio,format=\(format),cache=writeback"]
+        let lower = image.lowercased()
+        if lower.hasSuffix(".iso") {
+            // An .iso is an optical disc and not a hard disk, and a firmware
+            // will not boot one that arrives on virtio-blk as a disk: it reads
+            // the first sector looking for a partition table, finds an optical
+            // filesystem's layout instead, and falls through to "no bootable
+            // device". media=cdrom with readonly=on is the difference between
+            // an installer that starts and an installer that is never reached -
+            // and every desktop ISO in LinuxDistroCatalog is one of these.
+            a += ["-drive", "file=\(image),if=none,id=cd0,format=raw,media=cdrom,readonly=on"]
+            a += ["-device", "virtio-blk-pci,drive=cd0"]
+        } else {
+            let format = lower.hasSuffix(".qcow2") ? "qcow2" : "raw"
+            a += ["-drive", "file=\(image),if=virtio,format=\(format),cache=writeback"]
+        }
 
         // A cloud image (every catalogue entry but the desktop ISO) boots its own
         // kernel from the ESP, which is what the firmware provides.
@@ -698,6 +787,106 @@ enum UnixSocket {
         }
         if result != 0 { close(fd); return -1 }
         return fd
+    }
+}
+
+// MARK: - The engine's own output
+
+/// QEMU's stdout and stderr, kept instead of lost.
+///
+/// WHY THIS EXISTS
+/// QEMU answers a command line it cannot use by printing a line and calling
+/// `exit(1)`. In a process that embeds it - this app - that is the app
+/// terminating: the window goes, and the reason went with it. So the engine's
+/// output is redirected into a pipe, streamed into the console view and
+/// appended to `Documents/linux-engine.log`, which is on the device and survives
+/// the exit. "The machine crashed" and "the machine said: multi-threaded TCG is
+/// not supported with the TCI interpreter" are the same symptom and completely
+/// different bug reports, and this is the thing that tells them apart.
+///
+/// The redirection is process-wide because that is what file descriptors are:
+/// QEMU writes to fd 2 and cannot be asked to write anywhere else. It is
+/// attached when a machine starts and handed back when the engine returns, so
+/// the app's own diagnostics reappear afterwards.
+final class EngineOutputCapture {
+    private let onText: (String) -> Void
+    private var readFD: Int32 = -1
+    private var savedOut: Int32 = -1
+    private var savedErr: Int32 = -1
+    private var thread: Thread?
+    private var stopped = false
+
+    /// Documents/linux-engine.log: where a reason outlives the process that
+    /// printed it. In the app's own Documents, so it is readable from the Files
+    /// app without a debugger.
+    static var logURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("linux-engine.log")
+    }
+
+    init(onText: @escaping (String) -> Void) { self.onText = onText }
+
+    /// Record one line in the log without a running capture, for the things the
+    /// app knows and the engine does not - the exit code, the header - so the
+    /// file reads as one story rather than a fragment.
+    static func note(_ line: String) {
+        let text = line.hasSuffix("\n") ? line : line + "\n"
+        guard let data = text.data(using: .utf8) else { return }
+        let url = logURL
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Take over the process's stdout and stderr, and stream what arrives.
+    func attach(header: String) {
+        var fds: [Int32] = [-1, -1]
+        guard pipe(&fds) == 0 else { return }
+        readFD = fds[0]
+        let writeFD = fds[1]
+        savedOut = dup(STDOUT_FILENO)
+        savedErr = dup(STDERR_FILENO)
+        dup2(writeFD, STDOUT_FILENO)
+        dup2(writeFD, STDERR_FILENO)
+        close(writeFD)
+        // Line buffered: a crash must not lose the line that explains it to a
+        // block buffer that never got flushed.
+        setvbuf(stdout, nil, _IOLBF, 0)
+        setvbuf(stderr, nil, _IOLBF, 0)
+        Self.note("--- engine start ---")
+        Self.note("$ " + header)
+        let t = Thread { [weak self] in self?.loop() }
+        t.name = "qemu-output"
+        t.qualityOfService = .utility
+        thread = t
+        t.start()
+    }
+
+    /// Give stdout and stderr back to the app. The reader ends when the read end
+    /// closes; leaving it open would park a thread on a pipe nothing writes to.
+    func detach() {
+        stopped = true
+        fflush(stdout); fflush(stderr)
+        if savedOut >= 0 { dup2(savedOut, STDOUT_FILENO); close(savedOut); savedOut = -1 }
+        if savedErr >= 0 { dup2(savedErr, STDERR_FILENO); close(savedErr); savedErr = -1 }
+        if readFD >= 0 { close(readFD); readFD = -1 }
+    }
+
+    private func loop() {
+        let fd = readFD
+        guard fd >= 0 else { return }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while !stopped {
+            let n = read(fd, &buffer, buffer.count)
+            if n <= 0 { break }
+            guard let text = String(bytes: buffer[0..<n], encoding: .utf8) else { continue }
+            Self.note(text)
+            onText(text)
+        }
     }
 }
 

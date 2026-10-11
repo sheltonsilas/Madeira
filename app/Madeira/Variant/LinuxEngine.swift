@@ -131,6 +131,31 @@ enum LinuxEngineSupport {
         #endif
     }
 
+    /// True when the linked QEMU was built with TCG's JIT (the default
+    /// configuration, and what upstream UTM ships).
+    ///
+    /// A third question, and the one that was missing. `hasQEMUCore` says an
+    /// engine is linked and `hasTCGInterpreter` says that engine can interpret;
+    /// neither says the engine can *compile*, and a QEMU built with
+    /// `--enable-tcg-interpreter` cannot run the JIT configuration at all.
+    /// Asking one for `-accel tcg,thread=multi` is therefore not "a slower
+    /// engine", it is an engine that refuses: QEMU reports a bad accelerator by
+    /// printing to stderr and calling `exit(1)`, and in a process that embeds
+    /// QEMU that exit is the whole app terminating. No window, no message, no
+    /// log - which is exactly the report this file is being fixed for: press
+    /// Start on a Linux machine and Madeira vanishes.
+    ///
+    /// Set by `MADEIRA_HAS_QEMU_JIT`, which the build only passes when the
+    /// linked QEMU really has the JIT. A TCI-only payload leaves it unset, and
+    /// `LinuxEnginePlan.resolve` then never offers `.utm` - see there.
+    static var hasJITCore: Bool {
+        #if MADEIRA_HAS_QEMU_JIT
+        return true
+        #else
+        return false
+        #endif
+    }
+
     /// True when the code that actually starts a guest is compiled in.
     ///
     /// Set by `MADEIRA_HAS_QEMU_LAUNCHER`, which belongs in the same place as
@@ -185,16 +210,28 @@ struct LinuxEnginePlan: Equatable {
         let kind: LinuxEngineKind
         var jitWouldHelp = false
 
-        if environmentRequiresJIT && jitIsOn {
+        // Whether the JIT configuration exists in this build at all. Adding
+        // this condition is the fix for "a Linux machine crashes the moment it
+        // starts": the payload is a QEMU configured for the interpreter, and
+        // this function used to hand it the JIT engine because the *environment*
+        // asked for JIT and a debugger was attached. The environment was right
+        // and the engine could not do it, and QEMU's way of saying so is exit(1)
+        // inside our own process. A capability question is answered by the
+        // build, not by the request.
+        let jitMayRun = LinuxEngineSupport.hasJITCore
+
+        if environmentRequiresJIT && jitIsOn && jitMayRun {
             kind = .utm
-        } else if environmentRequiresJIT {
+        } else if environmentRequiresJIT && jitMayRun {
             // Asked for JIT, no debugger: drop to the interpreter rather than
             // telling the user their environment cannot run.
             kind = .utmSE
             jitWouldHelp = true
         } else {
             kind = .utmSE
-            jitWouldHelp = jitIsOn == false
+            // Enabling JIT is only advice when there is a JIT to enable: with an
+            // interpreter-only engine, no debugger makes it faster.
+            jitWouldHelp = jitIsOn == false && jitMayRun
         }
 
         if !LinuxEngineSupport.hasQEMUCore {
