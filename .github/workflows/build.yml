@@ -306,6 +306,126 @@ jobs:
             || { echo "::error::the not-published message did not name the asset"; exit 1; }
           echo "a missing payload is reported as 10 and names the asset, as designed"
 
+  # A Linux guest boots a machine that has no iPhone in it.
+  #
+  # WHY THIS JOB EXISTS, AND WHAT IT DOES NOT CLAIM
+  # The engine is a Mach-O built for iOS - LC_BUILD_VERSION platform 2 - so no
+  # simulator can load it and the app cannot be run anywhere but a device. That
+  # is a property of the payload and not a choice, and it is why three days of
+  # "Ubuntu crashes immediately" had nothing anyone could run. The question
+  # splits cleanly, though: whether the command line the launcher builds boots a
+  # machine is a question about QEMU and about the firmware this app ships, and
+  # both are here. The other half - whether the iOS build of QEMU executes it -
+  # is unreachable on a runner, and is what Documents/linux-engine.log is for.
+  #
+  # The flags are not written out again below. tools/check_launcher_argv.py
+  # reads them out of LinuxMachineConsole.arguments, and this job runs what it
+  # says, because a copy of the flags stays the same while the app changes -
+  # the failure tools/mirror_ci.py exists to avoid.
+  #
+  # The host QEMU is the distribution's, so its version is in the log and is not
+  # the payload's. What is being checked is the command line, the firmware
+  # images and the two sockets, none of which are properties of the version.
+  linux-boot-smoke:
+    name: The launcher's command line boots UEFI firmware
+    needs: verify-jit-invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Where the payload's firmware images are unpacked to.
+      sysroot: /tmp/qemu-ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A host QEMU, and the disk image tool
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-utils
+          qemu-system-aarch64 --version
+
+      - name: The command line itself, and the checker's own test
+        # The self test mutates the real source into the mistakes that produce a
+        # machine that does not boot - a virtio disk holding an .iso, an
+        # accelerator the build cannot have, a socket that waits for a reader -
+        # and requires each to be refused. A gate that cannot fail is a comment.
+        run: |
+          set -euo pipefail
+          python3 tools/check_launcher_argv.py --self-test
+          python3 tools/check_launcher_argv.py --no-jit-core --image /tmp/guest.qcow2
+
+      - name: Fetch the firmware the app ships
+        # Exit 10 is "the payloads release does not exist yet", which is not a
+        # failure of this job: an app build before the first payload run has no
+        # engine to boot either, and the two steps below say so when they skip.
+        run: |
+          set -euo pipefail
+          status=0
+          bash build/ci/fetch-payload.sh qemu-ios-tci-arm64.tar.gz "$sysroot" || status=$?
+          case "$status" in
+            0) echo "payload: ok" ;;
+            10) echo "::warning::the QEMU payload is not published, so the firmware this app ships cannot be booted here" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: An empty disk reaches the firmware, and Stop stops it
+        run: |
+          set -euo pipefail
+          if [ ! -f "$sysroot/share/qemu/edk2-aarch64-code.fd" ]; then
+            echo "::warning::no payload, so the firmware was not booted here"
+            exit 0
+          fi
+          qemu-img create -f qcow2 /tmp/guest.qcow2 64M
+          # The app copies the template into the machine's own folder, because
+          # the firmware writes to it; the payload's copy is left alone.
+          cp "$sysroot/share/qemu/edk2-arm-vars.fd" /tmp/efi-vars.fd
+          python3 tools/check_launcher_argv.py --no-jit-core \
+            --image /tmp/guest.qcow2 --sysroot "$sysroot" \
+            --writable-vars /tmp/efi-vars.fd \
+            --console /tmp/guest-console.sock --monitor /tmp/guest-monitor.sock \
+            --emit-json /tmp/argv-disk.json
+          python3 tools/boot_smoke.py --argv-json /tmp/argv-disk.json \
+            --what "a machine with an empty disk" \
+            --expect BdsDxe \
+            --expect "no bootable option" \
+            --console-timeout 600
+
+      - name: An installer ISO boots from the disc the launcher attaches
+        # The disc is the whole point of this step. An .iso is an optical disc,
+        # and a firmware given one through a disk front end finds no partition
+        # table and no boot entry - which is why a desktop ISO could never have
+        # started. So three things are required together: the device is
+        # reported as removable media by QEMU itself, the firmware found a boot
+        # option on the disc, and the guest then read at least a hundred
+        # kilobytes of it. Console text alone would pass on a bootloader that
+        # started and died; reads alone would pass on a firmware that probed it.
+        run: |
+          set -euo pipefail
+          if [ ! -f "$sysroot/share/qemu/edk2-aarch64-code.fd" ]; then
+            echo "::warning::no payload, so the firmware was not booted here"
+            exit 0
+          fi
+          # Pinned by version and hash: the installer is Alpine's virtual
+          # flavour, 69 MB, and the only one in this job that is not the app's.
+          url=https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-virt-3.20.3-aarch64.iso
+          curl -fsSL -o /tmp/installer.iso "$url"
+          echo "dbd0c2eaa0bfa39e18d075dae07760a9055ffdee0a338c8a35059413b0f76fec  /tmp/installer.iso" | sha256sum -c -
+          cp "$sysroot/share/qemu/edk2-arm-vars.fd" /tmp/iso-vars.fd
+          python3 tools/check_launcher_argv.py --no-jit-core \
+            --image /tmp/installer.iso --sysroot "$sysroot" \
+            --writable-vars /tmp/iso-vars.fd --vcpus 2 --ram 1024 \
+            --console /tmp/iso-console.sock --monitor /tmp/iso-monitor.sock \
+            --emit-json /tmp/argv-iso.json
+          python3 tools/boot_smoke.py --argv-json /tmp/argv-iso.json \
+            --what "an installer ISO" \
+            --expect "starting Boot" --expect "Linux version" --expect GRUB \
+            --forbid "no bootable option" \
+            --expect-block "Removable media: +Yes" \
+            --note "Linux version" --note "Alpine" \
+            --settle 150 \
+            --expect-stats "rd_bytes=[1-9][0-9]{5,}" \
+            --console-timeout 600
+
   build:
     name: ${{ matrix.variant }}
     needs: verify-jit-invariants

@@ -141,12 +141,15 @@ def mirror_build(text):
         1,
     )
 
-    # 2. the two bare checkouts: verify-jit-invariants and publish. Counted
-    #    before either is rewritten, because a pinned checkout still contains
-    #    the line being counted.
-    assert text.count(CHECKOUT_BARE) == 2, (
-        "build.yml: expected two bare checkouts (verify and publish), found "
-        f"{text.count(CHECKOUT_BARE)}"
+    # 2. the bare checkouts: verify-jit-invariants, linux-boot-smoke and
+    #    publish. Counted before any of them is rewritten, because a pinned
+    #    checkout still contains the line being counted. A job added here and
+    #    not added to this count fails the assertion rather than checking out a
+    #    repository that never contains the source - which is what the build
+    #    host is, and the reason every checkout has to be pinned.
+    assert text.count(CHECKOUT_BARE) == 3, (
+        "build.yml: expected three bare checkouts (verify, linux-boot-smoke and "
+        f"publish), found {text.count(CHECKOUT_BARE)}"
     )
     text = text.replace(CHECKOUT_BARE, pin("          ", "          ", "") + "\n")
 

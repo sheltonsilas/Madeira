@@ -515,15 +515,29 @@ final class LinuxMachineConsole: ObservableObject {
         let image = environment.imagePath ?? ""
         let lower = image.lowercased()
         if lower.hasSuffix(".iso") {
-            // An .iso is an optical disc and not a hard disk, and a firmware
-            // will not boot one that arrives on virtio-blk as a disk: it reads
-            // the first sector looking for a partition table, finds an optical
-            // filesystem's layout instead, and falls through to "no bootable
-            // device". media=cdrom with readonly=on is the difference between
-            // an installer that starts and an installer that is never reached -
-            // and every desktop ISO in LinuxDistroCatalog is one of these.
+            // An .iso is an optical disc and not a hard disk, and it takes two
+            // things to hand one to a firmware.
+            //
+            // The backend first: media=cdrom with readonly=on, because the
+            // drive is read-only media holding an optical filesystem, and a
+            // firmware handed that through a plain disk reads its first sector
+            // looking for a partition table, finds an ISO9660 layout instead,
+            // and falls through to "no bootable device".
+            //
+            // Then the front end, which is the part virtio-blk cannot be.
+            // virtio-blk is a disk device - its own UEFI driver reports its
+            // media as non-removable - so media=cdrom on a virtio-blk-pci drive
+            // describes the backend and not what the guest is given, and El
+            // Torito is then found, if at all, by accident of the partition
+            // scanner's tolerance. virtio-scsi is the front end that has a
+            // CD-ROM, which is what a scsi-cd on a virtio-scsi controller is,
+            // and the firmware enumerates it as an optical drive with a boot
+            // entry of its own. Every desktop ISO in LinuxDistroCatalog is one
+            // of these, so this is the difference between an installer that
+            // starts and an installer that is never reached.
             a += ["-drive", "file=\(image),if=none,id=cd0,format=raw,media=cdrom,readonly=on"]
-            a += ["-device", "virtio-blk-pci,drive=cd0"]
+            a += ["-device", "virtio-scsi-pci,id=scsi0"]
+            a += ["-device", "scsi-cd,bus=scsi0.0,drive=cd0"]
         } else {
             let format = lower.hasSuffix(".qcow2") ? "qcow2" : "raw"
             a += ["-drive", "file=\(image),if=virtio,format=\(format),cache=writeback"]
