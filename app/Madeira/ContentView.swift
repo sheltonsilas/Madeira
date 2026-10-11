@@ -1456,17 +1456,7 @@ struct ContentView: View {
          * The bridge deliberately does not own the session: ContentView does,
          * via wine_process_start. */
         WindowsInstallerBridge.shared.launchHandler = { relative in
-            var entry = LibraryEntry(
-                title: (relative as NSString).lastPathComponent,
-                // 32 or 64 from the file's own PE header, never assumed. A
-                // 32-bit setup program launched as "64-bit" would show the
-                // wrong badge and, worse, hide the one thing the user needs to
-                // know when it does not run. 0 when the header cannot be read,
-                // which is what an unknown bitness is.
-                relativePath: relative,
-                bits: Self.installedBits(relative))
-            entry.arguments = ""
-            launchLibraryEntry(entry)
+            startRequestedProgram(relative)
         }
 
         /* An installer iOS opened WITH Madeira may have arrived before this ran:
@@ -1476,6 +1466,74 @@ struct ContentView: View {
          * comes to the front and does nothing, which is indistinguishable from a
          * crash from the user's side. */
         IncomingInstaller.shared.drain()
+
+        /* An install asked for while a session was already up. The desktop is a
+         * session and so is the browser, so this is the normal case rather than an
+         * edge one: the request could not start then, was written down, and runs now,
+         * as this app run's first session - the only one it is allowed. */
+        startQueuedInstaller()
+    }
+
+    /// Run a program an installer asked for: the browser's Install button, a
+    /// download shelf's Install, or a setup .exe iOS handed to the app.
+    ///
+    /// A Wine session that is already up cannot be joined: Madeira runs one
+    /// session per app run (see LibraryModel.sessionsThisRun - the wineserver's
+    /// permanent objects outlive the session, and a second one aborts in
+    /// init_registry). So a request that arrives during a session is written to
+    /// disk and started at the beginning of the next launch, and the user is told
+    /// that in a sentence that also says what to do. Tapping Install and getting
+    /// nothing at all is what this replaces.
+    ///
+    /// The answer to "did it start" is left in WindowsInstallerBridge for the
+    /// caller that reports it; see `lastRequestWasQueued`.
+    private func startRequestedProgram(_ relative: String) {
+        if wine_process_is_running() != 0 || wineserver_is_running() != 0 || library.current != nil {
+            let request = PendingInstall.note(relativePath: relative)
+            WindowsInstallerBridge.shared.lastRequestWasQueued = true
+            LogStore.shared.log("[install-later] a session is already running; "
+                                + "\(request.filename) is queued for the next launch")
+            library.restartNotice = "Madeira runs one Wine session at a time, and one is already "
+                + "running. \(request.filename) is ready and will start by itself: close Madeira "
+                + "completely - swipe it away in the app switcher - and open it again."
+            return
+        }
+        WindowsInstallerBridge.shared.lastRequestWasQueued = false
+        var entry = LibraryEntry(
+            title: (relative as NSString).lastPathComponent,
+            // 32 or 64 from the file's own PE header, never assumed. 0 when the
+            // header cannot be read, which is what an unknown bitness is.
+            relativePath: relative,
+            bits: Self.installedBits(relative))
+        entry.arguments = ""
+        launchLibraryEntry(entry)
+    }
+
+    /// Start the installer a previous launch had to queue.
+    ///
+    /// Called from startup(), before a session can exist, because the one Wine
+    /// session this app run gets has to be this one - a request that waited a
+    /// launch would otherwise wait forever, which is the same silent failure in a
+    /// slower costume. A request whose file is no longer in the prefix is
+    /// dropped rather than started: Wine would show its own error box and the
+    /// user would be looking at a program that is not there.
+    private func startQueuedInstaller() {
+        guard let request = PendingInstall.pending else { return }
+        guard wine_process_is_running() == 0, wineserver_is_running() == 0, library.current == nil else { return }
+        let staged = LibraryModel.drive.appendingPathComponent(request.relativePath)
+        guard FileManager.default.fileExists(atPath: staged.path) else {
+            _ = PendingInstall.take()
+            LogStore.shared.log("[install-later] \(request.filename) is no longer in the prefix; "
+                                + "the queued install was dropped")
+            return
+        }
+        guard let taken = PendingInstall.take() else { return }
+        LogStore.shared.log("[install-later] starting the installer this app queued: \(taken.filename)")
+        var entry = LibraryEntry(title: taken.filename,
+                                 relativePath: taken.relativePath,
+                                 bits: Self.installedBits(taken.relativePath))
+        entry.arguments = ""
+        launchLibraryEntry(entry)
     }
 
     /// The bitness of a staged file, read from its PE header (0x14c: 32-bit

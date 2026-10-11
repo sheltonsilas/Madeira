@@ -27,6 +27,13 @@ final class WindowsInstallerBridge: ObservableObject {
     /// the current session, exactly as a library entry would.
     var launchHandler: ((String) -> Void)?
 
+    /// Whether the last request to `launchHandler` had to wait for the next app
+    /// run instead of starting. Written by ContentView's launcher, because only
+    /// it knows: the bridge hands the path over and gets no answer back, and the
+    /// two callers that report what happened to the user - IncomingInstaller and
+    /// the browser's download shelf - have to say which of the two it was.
+    var lastRequestWasQueued = false
+
     /// Folders inside drive_c that a Windows installer can write a program to.
     /// Order matters: the first hit wins if a program exists in two of them.
     /// Not private: InstalledAppsStore scans the same folders, and could not.
@@ -89,6 +96,7 @@ final class WindowsInstallerBridge: ObservableObject {
     /// Turn a slash path relative to drive_c into the `C:\...` form the Wine
     /// session expects, and hand it to the app's launcher.
     func run(relativePath: String) {
+        lastRequestWasQueued = false
         launchHandler?(relativePath)
     }
 
@@ -161,6 +169,7 @@ final class WindowsInstallerBridge: ObservableObject {
         // exactly what the compiler rejected. withCString hands out the pointer.
         _ = ("C:\\" + relativePath.windowsPath).withCString { setenv("MADEIRA_EXE", $0, 1) }
         _ = arguments.joined(separator: " ").withCString { setenv("MADEIRA_ARGS", $0, 1) }
+        lastRequestWasQueued = false
         launchHandler?(relativePath)
     }
 
@@ -238,9 +247,23 @@ final class IncomingInstaller {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let staged = try WindowsInstallerBridge.shared.offer(fileAt: url)
-            started = url.lastPathComponent
-            problem = nil
-            log("started \(url.lastPathComponent) as C:\\\(staged)")
+            // Staged and then either started or queued: `offer` runs the
+            // installer through the launcher, which queues the request when a
+            // session is already up. Reported as two different outcomes,
+            // because "it is running" and "it starts next launch" are two
+            // different things to be told, and only one of them means the user
+            // can sit and watch it work.
+            if WindowsInstallerBridge.shared.lastRequestWasQueued {
+                started = nil
+                problem = "Madeira runs one Wine session at a time, and one is already running. "
+                    + "\(url.lastPathComponent) is inside the prefix as C:\\\(staged) and will "
+                    + "start by itself the next time Madeira opens."
+                log("queued \(url.lastPathComponent) as C:\\\(staged): a session is already running")
+            } else {
+                started = url.lastPathComponent
+                problem = nil
+                log("started \(url.lastPathComponent) as C:\\\(staged)")
+            }
         } catch {
             started = nil
             problem = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
@@ -380,6 +403,70 @@ struct AppLauncherView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .task { store.refresh() }
         }
+    }
+}
+
+// MARK: - A request that has to wait for the next launch
+
+/// The program an install asked for while a Wine session was already running.
+///
+/// WHY A FILE
+/// Madeira runs one Wine session per app run (LibraryModel.sessionsThisRun): the
+/// wineserver's permanent objects outlive their session, and a second session in
+/// the same process aborts in init_registry. So a program cannot be started in a
+/// session that is already up, and the only useful thing to do with a request
+/// that arrives then is to write it down and run it at the start of the next
+/// launch.
+///
+/// This is the fix for "in the Wine desktop, if I choose an app's setup .exe it
+/// gets stuck". Before it, the request went to the launcher, whose first line is
+/// `guard wine_process_is_running() == 0 ...`: with the desktop - or the
+/// browser, which is itself a session - already up, tapping Install did nothing
+/// at all. No install, no message that said why, and the download shelf kept
+/// showing a finished installer. The file is the difference between a request
+/// that is lost and one that is queued, and `startQueuedInstaller` in
+/// ContentView is the thing that runs it.
+///
+/// Cleared as it is read. A request that has been started is not one to start
+/// again on every later launch, and a file that stayed behind would do exactly
+/// that.
+enum PendingInstall {
+    struct Request: Codable {
+        var relativePath: String
+        var filename: String
+        var requested: Date
+    }
+
+    /// Documents/pending-install.json: in the app's own Documents rather than in
+    /// the prefix, so it can be read from the Files app when the installer the
+    /// user is waiting for does not appear.
+    static var fileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pending-install.json")
+    }
+
+    /// Write the request, replacing an earlier one: the last thing the user
+    /// asked for is the thing they expect to happen next.
+    @discardableResult
+    static func note(relativePath: String) -> Request {
+        let request = Request(relativePath: relativePath,
+                              filename: (relativePath as NSString).lastPathComponent,
+                              requested: Date())
+        if let data = try? JSONEncoder().encode(request) { try? data.write(to: fileURL) }
+        return request
+    }
+
+    /// What is waiting, without consuming it.
+    static var pending: Request? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(Request.self, from: data)
+    }
+
+    /// Take the waiting request and clear it, or nil when there is none.
+    static func take() -> Request? {
+        guard let request = pending else { return nil }
+        try? FileManager.default.removeItem(at: fileURL)
+        return request
     }
 }
 
